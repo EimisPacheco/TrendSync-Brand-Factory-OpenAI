@@ -1,0 +1,8 @@
+[
+  {
+    "origin": ["https://frontend-528610678511.us-central1.run.app", "http://localhost:3000"],
+    "method": ["GET", "HEAD"],
+    "responseHeader": ["Content-Type", "Range"],
+    "maxAgeSeconds": 3600
+  }
+]

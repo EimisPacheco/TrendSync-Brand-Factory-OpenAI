@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bria API Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    h1 {
+      color: white;
+      text-align: center;
+      margin-bottom: 30px;
+      font-size: 2.5em;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 30px;
+      margin-bottom: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    }
+    h2 {
+      color: #1a202c;
+      margin-bottom: 10px;
+      font-size: 1.5em;
+    }
+    p {
+      color: #4a5568;
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+    button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 14px 28px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 600;
+      transition: transform 0.2s;
+    }
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+    }
+    button:active { transform: translateY(0); }
+    button:disabled {
+      background: #cbd5e0;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .status {
+      margin-top: 20px;
+      padding: 15px;
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .success {
+      background: #c6f6d5;
+      color: #22543d;
+      border-left: 4px solid #38a169;
+    }
+    .error {
+      background: #fed7d7;
+      color: #742a2a;
+      border-left: 4px solid #e53e3e;
+    }
+    .loading {
+      background: #bee3f8;
+      color: #2c5282;
+      border-left: 4px solid #3182ce;
+    }
+    pre {
+      background: #1a202c;
+      color: #e2e8f0;
+      padding: 15px;
+      border-radius: 8px;
+      overflow-x: auto;
+      margin-top: 15px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .info-box {
+      background: #fef3c7;
+      color: #78350f;
+      padding: 15px;
+      border-radius: 8px;
+      border-left: 4px solid #f59e0b;
+      margin-bottom: 20px;
+    }
+    .info-box strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+    code {
+      background: #edf2f7;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.9em;
+      color: #d53f8c;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔍 Bria API Connection Test</h1>
+
+    <div class="info-box">
+      <strong>📋 API Configuration</strong>
+      <div style="margin-top: 8px;">
+        <strong>API Key:</strong> 7b0faff4db5549bb80968a2d61631c6a<br>
+        <strong>Endpoint:</strong> https://engine.prod.bria-api.com/v2
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Test 1: Structured Prompt (Sync Mode)</h2>
+      <p>Tests <code>POST /v2/structured_prompt/generate</code> with <code>sync: true</code></p>
+      <p><strong>What it does:</strong> Converts a text description into structured JSON with immediate response (HTTP 200).</p>
+      <button onclick="testStructuredPrompt()" id="btn1">▶ Run Test 1</button>
+      <div id="result1"></div>
+    </div>
+
+    <div class="card">
+      <h2>Test 2: Structured Prompt with Images (Sync)</h2>
+      <p>Tests <code>POST /v2/structured_prompt/generate</code> with reference image</p>
+      <p><strong>What it does:</strong> Generates structured prompt from a reference image URL.</p>
+      <button onclick="testStructuredPromptWithImages()" id="btn2">▶ Run Test 2</button>
+      <div id="result2"></div>
+    </div>
+
+    <div class="card">
+      <h2>Test 3: Lite Endpoint</h2>
+      <p>Tests <code>POST /v2/structured_prompt/generate/lite</code></p>
+      <p><strong>What it does:</strong> Faster processing with lite endpoint.</p>
+      <button onclick="testLiteEndpoint()" id="btn3">▶ Run Test 3</button>
+      <div id="result3"></div>
+    </div>
+
+    <div class="card">
+      <h2>Test 4: Image Generation (Sync Mode)</h2>
+      <p>Tests <code>POST /v2/image/generate</code> with <code>sync: true</code></p>
+      <p><strong>What it does:</strong> Generates image with immediate response.</p>
+      <button onclick="testImageGenerate()" id="btn4">▶ Run Test 4</button>
+      <div id="result4"></div>
+    </div>
+
+    <div class="card">
+      <h2>Test 5: Two-Step Workflow (Recommended)</h2>
+      <p>Tests the complete workflow: Structured prompt → Image generation (both sync)</p>
+      <p><strong>What it does:</strong> This is the approach your app uses for brand validation.</p>
+      <button onclick="testTwoStepWorkflow()" id="btn5">▶ Run Test 5</button>
+      <div id="result5"></div>
+    </div>
+  </div>
+
+  <script>
+    const BRIA_API_KEY = '7b0faff4db5549bb80968a2d61631c6a';
+    const BRIA_API_BASE = 'https://engine.prod.bria-api.com/v2';
+
+    function showStatus(resultId, type, message, data = null) {
+      const div = document.getElementById(resultId);
+      let html = `<div class="status ${type}"><strong>${message}</strong></div>`;
+      if (data) {
+        html += `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+      }
+      div.innerHTML = html;
+    }
+
+    async function testStructuredPrompt() {
+      const btn = document.getElementById('btn1');
+      btn.disabled = true;
+      showStatus('result1', 'loading', '⏳ Calling Bria API with sync=true...');
+
+      try {
+        const requestBody = {
+          prompt: 'A photorealistic, high-resolution rendering of a professional sustainable sneaker in sage green color, organic materials, minimalist style, clean white studio background, product photography',
+          sync: true  // ✅ Immediate response (HTTP 200)
+        };
+
+        console.log('Request:', requestBody);
+
+        const response = await fetch(`${BRIA_API_BASE}/structured_prompt/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'api_token': BRIA_API_KEY,
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        console.log('Response status:', response.status);
+        console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log('Response data:', data);
+
+          // Handle both response formats
+          const structured_prompt = data.result?.structured_prompt || data.structured_prompt;
+
+          showStatus('result1', 'success',
+            `✅ SUCCESS! HTTP ${response.status}\n\nSync mode: Immediate response received!`,
+            {
+              response_format: data.result ? 'data.result.structured_prompt' : 'data.structured_prompt',
+              structured_prompt
+            }
+          );
+        } else {
+          const errorText = await response.text();
+          showStatus('result1', 'error',
+            `❌ FAILED! HTTP ${response.status} ${response.statusText}`,
+            { error: errorText }
+          );
+        }
+      } catch (error) {
+        showStatus('result1', 'error',
+          `❌ NETWORK ERROR: ${error.message}\n\nThis is likely a CORS error. Open browser console for details.`,
+          { error: error.stack }
+        );
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function testStructuredPromptWithImages() {
+      const btn = document.getElementById('btn2');
+      btn.disabled = true;
+      showStatus('result2', 'loading', '⏳ Calling Bria API with reference image...');
+
+      try {
+        const requestBody = {
+          images: ['https://bria-datasets.s3.us-east-1.amazonaws.com/api_doc/fibo/ref_1.jpg'],
+          sync: true  // ✅ Immediate response (HTTP 200)
+        };
+
+        console.log('Request:', requestBody);
+
+        const response = await fetch(`${BRIA_API_BASE}/structured_prompt/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'api_token': BRIA_API_KEY,
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        console.log('Response status:', response.status);
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log('Response data:', data);
+
+          const structured_prompt = data.result?.structured_prompt || data.structured_prompt;
+
+          showStatus('result2', 'success',
+            `✅ SUCCESS! HTTP ${response.status}\n\nGenerated structured prompt from reference image!`,
+            {
+              response_format: data.result ? 'data.result.structured_prompt' : 'data.structured_prompt',
+              structured_prompt
+            }
+          );
+        } else {
+          const errorText = await response.text();
+          showStatus('result2', 'error',
+            `❌ FAILED! HTTP ${response.status} ${response.statusText}`,
+            { error: errorText }
+          );
+        }
+      } catch (error) {
+        showStatus('result2', 'error',
+          `❌ NETWORK ERROR: ${error.message}\n\nThis is likely a CORS error.`,
+          { error: error.stack }
+        );
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function testLiteEndpoint() {
+      const btn = document.getElementById('btn3');
+      btn.disabled = true;
+      showStatus('result3', 'loading', '⏳ Calling Bria API /lite endpoint...');
+
+      try {
+        const requestBody = {
+          prompt: 'A professional sneaker photo, minimalist style, white background'
+        };
+
+        console.log('Request:', requestBody);
+
+        const response = await fetch(`${BRIA_API_BASE}/structured_prompt/generate/lite`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'api_token': BRIA_API_KEY,
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        console.log('Response status:', response.status);
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log('Response data:', data);
+
+          showStatus('result3', 'success',
+            `✅ SUCCESS! HTTP ${response.status}\n\nLite endpoint: Faster processing!`,
+            data
+          );
+        } else {
+          const errorText = await response.text();
+          showStatus('result3', 'error',
+            `❌ FAILED! HTTP ${response.status} ${response.statusText}`,
+            { error: errorText }
+          );
+        }
+      } catch (error) {
+        showStatus('result3', 'error',
+          `❌ NETWORK ERROR: ${error.message}\n\nThis is likely a CORS error.`,
+          { error: error.stack }
+        );
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function testImageGenerate() {
+      const btn = document.getElementById('btn4');
+      btn.disabled = true;
+      showStatus('result4', 'loading', '⏳ Calling Bria API image generation with sync=true...');
+
+      try {
+        const requestBody = {
+          prompt: 'A simple white sneaker on clean white background, professional product photography, high quality',
+          negative_prompt: 'blurry, distorted, low quality, watermark',
+          aspect_ratio: '4:5',
+          sync: true,  // ✅ Immediate response with image URL
+        };
+
+        console.log('Request:', requestBody);
+
+        const response = await fetch(`${BRIA_API_BASE}/image/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'api_token': BRIA_API_KEY,
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        console.log('Response status:', response.status);
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log('Response data:', data);
+
+          const result_url = data.result?.result_url || data.result_url;
+
+          showStatus('result4', 'success',
+            `✅ SUCCESS! HTTP ${response.status}\n\nImage generated synchronously!`,
+            {
+              response_format: data.result ? 'data.result.result_url' : 'data.result_url',
+              result_url,
+              full_response: data
+            }
+          );
+        } else {
+          const errorText = await response.text();
+          showStatus('result4', 'error',
+            `❌ FAILED! HTTP ${response.status} ${response.statusText}`,
+            { error: errorText }
+          );
+        }
+      } catch (error) {
+        showStatus('result4', 'error',
+          `❌ NETWORK ERROR: ${error.message}\n\nThis is likely a CORS error.`,
+          { error: error.stack }
+        );
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function testTwoStepWorkflow() {
+      const btn = document.getElementById('btn5');
+      btn.disabled = true;
+      showStatus('result5', 'loading', '⏳ Step 1/2: Generating structured prompt (sync mode)...');
+
+      try {
+        // Step 1: Generate structured prompt with sync=true
+        const step1Request = {
+          prompt: 'Professional sustainable sneaker in sage green, organic materials, minimalist design, white studio background',
+          sync: true  // ✅ Immediate response
+        };
+
+        console.log('Step 1 Request:', step1Request);
+
+        const step1 = await fetch(`${BRIA_API_BASE}/structured_prompt/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'api_token': BRIA_API_KEY,
+          },
+          body: JSON.stringify(step1Request),
+        });
+
+        console.log('Step 1 Response status:', step1.status);
+
+        if (!step1.ok) {
+          const error = await step1.text();
+          showStatus('result5', 'error',
+            `❌ Step 1 Failed! HTTP ${step1.status}`,
+            { error }
+          );
+          btn.disabled = false;
+          return;
+        }
+
+        const step1Data = await step1.json();
+        console.log('Step 1 Response data:', step1Data);
+
+        // Extract structured_prompt from either format
+        const structured_prompt = step1Data.result?.structured_prompt || step1Data.structured_prompt;
+
+        showStatus('result5', 'loading',
+          '✅ Step 1 Complete! Structured prompt generated.\n⏳ Step 2/2: Generating image with structured prompt (sync mode)...'
+        );
+
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Step 2: Generate image with sync=true
+        const step2Request = {
+          structured_prompt: structured_prompt,
+          aspect_ratio: '4:5',
+          sync: true,  // ✅ Immediate response with image
+        };
+
+        console.log('Step 2 Request:', { ...step2Request, structured_prompt: '...(omitted)' });
+
+        const step2 = await fetch(`${BRIA_API_BASE}/image/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'api_token': BRIA_API_KEY,
+          },
+          body: JSON.stringify(step2Request),
+        });
+
+        console.log('Step 2 Response status:', step2.status);
+
+        if (step2.ok) {
+          const step2Data = await step2.json();
+          console.log('Step 2 Response data:', step2Data);
+
+          const result_url = step2Data.result?.result_url || step2Data.result_url;
+
+          showStatus('result5', 'success',
+            '🎉 TWO-STEP WORKFLOW SUCCESS!\n\n✅ Step 1: Structured prompt generated (sync)\n✅ Step 2: Image generated (sync)\n\nBoth steps returned immediate responses!',
+            {
+              step1: {
+                response_format: step1Data.result ? 'data.result.structured_prompt' : 'data.structured_prompt',
+                structured_prompt
+              },
+              step2: {
+                response_format: step2Data.result ? 'data.result.result_url' : 'data.result_url',
+                result_url,
+                full_response: step2Data
+              }
+            }
+          );
+        } else {
+          const error = await step2.text();
+          showStatus('result5', 'error',
+            `❌ Step 2 Failed! HTTP ${step2.status}`,
+            {
+              step1_success: { structured_prompt },
+              step2_error: error
+            }
+          );
+        }
+      } catch (error) {
+        showStatus('result5', 'error',
+          `❌ NETWORK ERROR: ${error.message}\n\nThis is likely a CORS error. Use the in-app test component instead.`,
+          { error: error.stack }
+        );
+      } finally {
+        btn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>

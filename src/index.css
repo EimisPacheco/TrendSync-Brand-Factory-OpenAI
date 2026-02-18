@@ -1,0 +1,156 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background: linear-gradient(135deg, #C5D1E8 0%, #D4DCF0 50%, #C5D1E8 100%);
+    min-height: 100vh;
+  }
+}
+
+@layer utilities {
+  /* ── Raised elements ── */
+
+  .neumorphic {
+    background: linear-gradient(145deg, #E8ECF4, #D4DCF0);
+    box-shadow: 8px 8px 20px rgba(163, 177, 198, 0.6),
+                -8px -8px 20px rgba(255, 255, 255, 0.8);
+    border-radius: 1rem;
+  }
+
+  .neumorphic-sm {
+    background: linear-gradient(145deg, #E8ECF4, #D4DCF0);
+    box-shadow: 4px 4px 10px rgba(163, 177, 198, 0.5),
+                -4px -4px 10px rgba(255, 255, 255, 0.7);
+    border-radius: 0.75rem;
+  }
+
+  .neumorphic-lg {
+    background: linear-gradient(145deg, #FFFFFF, #E8ECF4);
+    box-shadow: 12px 12px 30px rgba(163, 177, 198, 0.6),
+                -12px -12px 30px rgba(255, 255, 255, 0.8);
+    border-radius: 1.5rem;
+  }
+
+  .neumorphic-card {
+    background: linear-gradient(145deg, #FFFFFF, #E8ECF4);
+    box-shadow: 8px 8px 20px rgba(163, 177, 198, 0.5),
+                -8px -8px 20px rgba(255, 255, 255, 0.9);
+    border-radius: 1.25rem;
+  }
+
+  /* ── Inset / concave elements ── */
+
+  .neumorphic-inset {
+    background: linear-gradient(145deg, #D4DCF0, #E8ECF4);
+    box-shadow: inset 4px 4px 10px rgba(163, 177, 198, 0.5),
+                inset -4px -4px 10px rgba(255, 255, 255, 0.7);
+    border-radius: 0.75rem;
+  }
+
+  .neumorphic-pressed {
+    background: linear-gradient(145deg, #C5D1E8, #D4DCF0);
+    box-shadow: inset 4px 4px 10px rgba(163, 177, 198, 0.6),
+                inset -4px -4px 10px rgba(255, 255, 255, 0.6);
+    border-radius: 0.75rem;
+  }
+
+  /* ── Buttons ── */
+
+  .btn-navy {
+    background: linear-gradient(145deg, #1E2A4A, #2A3B5C);
+    box-shadow: 4px 4px 12px rgba(30, 42, 74, 0.4),
+                -2px -2px 8px rgba(255, 255, 255, 0.3);
+    color: white;
+    border-radius: 2rem;
+    transition: all 0.3s ease;
+  }
+
+  .btn-navy:hover {
+    background: linear-gradient(145deg, #2A3B5C, #1E2A4A);
+    box-shadow: 6px 6px 16px rgba(30, 42, 74, 0.5),
+                -3px -3px 10px rgba(255, 255, 255, 0.4);
+    transform: translateY(-1px);
+  }
+
+  .btn-soft {
+    background: linear-gradient(145deg, #E8ECF4, #D4DCF0);
+    box-shadow: 4px 4px 10px rgba(163, 177, 198, 0.5),
+                -4px -4px 10px rgba(255, 255, 255, 0.7);
+    color: #3A4A6B;
+    border-radius: 1rem;
+    transition: all 0.3s ease;
+  }
+
+  .btn-soft:hover {
+    box-shadow: 6px 6px 14px rgba(163, 177, 198, 0.6),
+                -6px -6px 14px rgba(255, 255, 255, 0.8);
+    transform: translateY(-1px);
+  }
+
+  /* ── Form inputs ── */
+
+  .input-neumorphic {
+    background: linear-gradient(145deg, #D4DCF0, #E8ECF4);
+    box-shadow: inset 4px 4px 10px rgba(163, 177, 198, 0.5),
+                inset -4px -4px 10px rgba(255, 255, 255, 0.7);
+    border-radius: 0.75rem;
+    color: #1E2A4A;
+    transition: all 0.3s ease;
+  }
+
+  .input-neumorphic:focus {
+    box-shadow: inset 4px 4px 10px rgba(163, 177, 198, 0.5),
+                inset -4px -4px 10px rgba(255, 255, 255, 0.7),
+                0 0 0 3px rgba(91, 155, 213, 0.2);
+    outline: none;
+  }
+
+  .input-neumorphic::placeholder {
+    color: #8A9AB5;
+  }
+
+  /* ── Circular icon ── */
+
+  .circular-icon {
+    background: linear-gradient(145deg, #E8ECF4, #C5D1E8);
+    box-shadow: 6px 6px 15px rgba(163, 177, 198, 0.5),
+                -6px -6px 15px rgba(255, 255, 255, 0.8);
+    border-radius: 50%;
+  }
+
+  .pastel-gradient {
+    background: linear-gradient(135deg, #C5D1E8 0%, #D4DCF0 50%, #C5D1E8 100%);
+  }
+}
+
+@keyframes float-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(30px, -50px) scale(1.05); }
+  66% { transform: translate(-20px, 20px) scale(0.95); }
+}
+
+@keyframes float-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(-40px, 30px) scale(0.95); }
+  66% { transform: translate(20px, -20px) scale(1.05); }
+}
+
+@keyframes float-3 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(20px, 40px) scale(1.05); }
+  66% { transform: translate(-30px, -30px) scale(0.95); }
+}
+
+.animate-float-1 {
+  animation: float-1 20s ease-in-out infinite;
+}
+
+.animate-float-2 {
+  animation: float-2 25s ease-in-out infinite;
+}
+
+.animate-float-3 {
+  animation: float-3 30s ease-in-out infinite;
+}
