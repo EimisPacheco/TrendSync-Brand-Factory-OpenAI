@@ -11,7 +11,8 @@ import sys
 import json
 import asyncio
 import logging
-import requests
+import time
+import httpx
 from typing import Any
 
 try:
@@ -52,6 +53,36 @@ if LOCATION == "global":
 
 # Module-level state for product context (voice tools are plain functions, no ToolContext)
 _voice_sessions: dict[str, dict] = {}
+# Pending images from tool calls — picked up by the downstream WS loop and sent to the frontend
+_pending_images: dict[str, list[dict]] = {}  # session_id → list of {image_base64, ...}
+
+# Tool call deduplication — prevents duplicate execution when LLM re-issues slow tools
+_tool_cache: dict[str, tuple[float, dict]] = {}  # "tool:key" → (timestamp, result)
+_DEDUP_TTL = 30  # seconds — cache tool results for this long
+
+def _dedup_get(tool_name: str, key: str) -> dict | None:
+    """Return cached tool result if within TTL, else None."""
+    cache_key = f"{tool_name}:{key}"
+    if cache_key in _tool_cache:
+        ts, result = _tool_cache[cache_key]
+        if time.time() - ts < _DEDUP_TTL:
+            logger.info(f"[DEDUP] Returning cached result for {cache_key}")
+            return result
+        del _tool_cache[cache_key]
+    return None
+
+def _dedup_set(tool_name: str, key: str, result: dict) -> None:
+    """Cache a tool result for deduplication."""
+    _tool_cache[f"{tool_name}:{key}"] = (time.time(), result)
+
+# Shared async HTTP client (reused across tool calls, non-blocking)
+_http_client: httpx.AsyncClient | None = None
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+    return _http_client
 
 logger.info(f"[Voice Companion] Starting: location={LOCATION}, model={VOICE_MODEL}")
 logger.info(f"[Voice Companion] Main backend at: {MAIN_BACKEND_URL}")
@@ -84,7 +115,7 @@ def _get_session_data() -> dict:
 # All AI calls route through the main backend (ADK on Vertex AI).
 # ==========================================================================
 
-def analyze_product_image(question: str) -> dict:
+async def analyze_product_image(question: str) -> dict:
     """
     Analyze the current product image visually and give specific design feedback.
     Call this when the user asks for opinions, suggestions, or creative direction
@@ -95,6 +126,10 @@ def analyze_product_image(question: str) -> dict:
     'Describe what you see', 'What color palette works here?', 'What would look good with this?'
     """
     logger.info(f"[TOOL: analyze_product_image] question='{question}'")
+
+    cached = _dedup_get("analyze", question)
+    if cached:
+        return cached
 
     session_data = _get_session_data()
     image_base64 = session_data.get("image_base64", "")
@@ -107,8 +142,8 @@ def analyze_product_image(question: str) -> dict:
         }
 
     try:
-        # Route through main backend ADK agent (Vertex AI) — no direct genai.Client
-        response = requests.post(
+        client = _get_http_client()
+        response = await client.post(
             f"{MAIN_BACKEND_URL}/adk/design-companion",
             json={
                 "session_id": f"voice-analyze-{id(session_data)}",
@@ -123,17 +158,18 @@ def analyze_product_image(question: str) -> dict:
                 "image_base64": image_base64,
                 "brand_id": session_data.get("brand_id", ""),
             },
-            timeout=60,
         )
 
         if response.status_code == 200:
             result = response.json()
-            return {
+            out = {
                 "action": "design_advice",
                 "status": "success",
                 "has_image": True,
                 "message": result.get("response", "I can see the product but couldn't generate detailed feedback."),
             }
+            _dedup_set("analyze", question, out)
+            return out
         else:
             return {
                 "action": "design_advice",
@@ -145,7 +181,7 @@ def analyze_product_image(question: str) -> dict:
         return {"action": "design_advice", "status": "error", "message": str(e)}
 
 
-def edit_product_image(edit_instruction: str) -> dict:
+async def edit_product_image(edit_instruction: str) -> dict:
     """
     Edit the current product image with a specific change.
     Call this when the user wants to modify the existing image.
@@ -154,43 +190,80 @@ def edit_product_image(edit_instruction: str) -> dict:
     """
     logger.info(f"[TOOL: edit_product_image] instruction='{edit_instruction}'")
 
+    cached = _dedup_get("edit", edit_instruction)
+    if cached:
+        return cached
+
+    session_data = _get_session_data()
+    image_base64 = session_data.get("image_base64", "")
+
+    if not image_base64:
+        return {
+            "action": "image_updated",
+            "status": "error",
+            "message": "No product image available to edit. Please make sure you're viewing a product.",
+        }
+
     try:
-        response = requests.post(
-            f"{MAIN_BACKEND_URL}/edit-image",
+        client = _get_http_client()
+        response = await client.post(
+            f"{MAIN_BACKEND_URL}/adk/design-companion",
             json={
-                "image_base64": "",  # Frontend injects the current product image
-                "edit_instruction": edit_instruction,
+                "session_id": f"voice-edit-{id(session_data)}",
+                "user_message": edit_instruction,
+                "product_context": {
+                    "name": session_data.get("product_name", ""),
+                    "category": session_data.get("product_category", ""),
+                    "subcategory": session_data.get("product_subcategory", ""),
+                    "colors": session_data.get("product_colors", []),
+                    "materials": session_data.get("product_materials", []),
+                },
+                "image_base64": image_base64,
+                "brand_id": session_data.get("brand_id", ""),
             },
-            timeout=60,
         )
 
         if response.status_code == 200:
             result = response.json()
-            return {
+            action = result.get("action") or {}
+            new_image = action.get("image_base64", "")
+
+            if new_image:
+                session_data["image_base64"] = new_image
+                for sid, sdata in _voice_sessions.items():
+                    if sdata is session_data:
+                        _pending_images.setdefault(sid, []).append({
+                            "image_base64": new_image,
+                            "edit_instruction": edit_instruction,
+                        })
+                        break
+                logger.info("[TOOL: edit_product_image] Image edited and queued for frontend")
+
+            out = {
                 "action": "image_updated",
                 "status": "success",
                 "edit_instruction": edit_instruction,
-                "has_new_image": result.get("success", False),
-                "message": f"Applied edit: {edit_instruction}. The updated design is now available.",
+                "has_new_image": bool(new_image),
+                "message": result.get("response", f"Applied edit: {edit_instruction}."),
             }
+            _dedup_set("edit", edit_instruction, out)
+            return out
         else:
             return {
                 "action": "image_updated",
-                "status": "queued",
-                "edit_instruction": edit_instruction,
-                "message": f"Design edit queued: {edit_instruction}. The frontend will apply this change.",
+                "status": "error",
+                "message": f"Image edit failed: backend returned {response.status_code}",
             }
     except Exception as e:
         logger.error(f"[TOOL: edit_product_image] Error: {e}")
         return {
             "action": "image_updated",
-            "status": "queued_for_frontend",
-            "edit_instruction": edit_instruction,
-            "message": f"Edit noted: {edit_instruction}. The frontend will execute this.",
+            "status": "error",
+            "message": f"Could not edit image: {str(e)}",
         }
 
 
-def make_brand_compliant() -> dict:
+async def make_brand_compliant() -> dict:
     """
     Automatically adjust the product image to match brand guidelines.
     Call this when the user asks to make the design on-brand or brand-compliant.
@@ -198,6 +271,10 @@ def make_brand_compliant() -> dict:
     'Apply brand guidelines', 'Fix brand compliance'
     """
     logger.info("[TOOL: make_brand_compliant]")
+
+    cached = _dedup_get("comply", "brand")
+    if cached:
+        return cached
 
     session_data = _get_session_data()
     image_base64 = session_data.get("image_base64", "")
@@ -210,8 +287,8 @@ def make_brand_compliant() -> dict:
         }
 
     try:
-        # Route through ADK agent which has the make_brand_compliant tool
-        response = requests.post(
+        client = _get_http_client()
+        response = await client.post(
             f"{MAIN_BACKEND_URL}/adk/design-companion",
             json={
                 "session_id": f"voice-comply-{id(session_data)}",
@@ -223,18 +300,33 @@ def make_brand_compliant() -> dict:
                 "image_base64": image_base64,
                 "brand_id": session_data.get("brand_id", ""),
             },
-            timeout=60,
         )
 
         if response.status_code == 200:
             result = response.json()
             action = result.get("action", {}) or {}
-            return {
+            new_image = action.get("image_base64", "")
+
+            if new_image:
+                session_data["image_base64"] = new_image
+                for sid, sdata in _voice_sessions.items():
+                    if sdata is session_data:
+                        _pending_images.setdefault(sid, []).append({
+                            "image_base64": new_image,
+                            "compliance_score": action.get("compliance_score"),
+                        })
+                        break
+                logger.info("[TOOL: make_brand_compliant] Image updated and queued for frontend")
+
+            out = {
                 "action": "brand_compliant",
                 "status": "success",
                 "compliance_score": action.get("compliance_score"),
+                "has_new_image": bool(new_image),
                 "message": result.get("response", "Brand compliance adjustments applied."),
             }
+            _dedup_set("comply", "brand", out)
+            return out
         else:
             return {
                 "action": "brand_compliant",
@@ -246,7 +338,7 @@ def make_brand_compliant() -> dict:
         return {"action": "brand_compliant", "status": "error", "message": str(e)}
 
 
-def fetch_trend_data(query: str, season: str = "", region: str = "global", demographic: str = "millennials") -> dict:
+async def fetch_trend_data(query: str, season: str = "", region: str = "global", demographic: str = "millennials") -> dict:
     """
     Fetch current real-time fashion trend data using Google Search grounding.
     Call this when the user asks about what's trending, popular colors, materials, or styles.
@@ -254,6 +346,10 @@ def fetch_trend_data(query: str, season: str = "", region: str = "global", demog
     'What materials are popular in Europe right now?'
     """
     logger.info(f"[TOOL: fetch_trend_data] query='{query}', season={season}, region={region}")
+
+    cached = _dedup_get("trends", query)
+    if cached:
+        return cached
 
     try:
         query_lower = query.lower()
@@ -276,7 +372,8 @@ def fetch_trend_data(query: str, season: str = "", region: str = "global", demog
         elif "streetwear" in query_lower:
             demographic = "Streetwear"
 
-        response = requests.post(
+        client = _get_http_client()
+        response = await client.post(
             f"{MAIN_BACKEND_URL}/trends",
             json={
                 "season": season,
@@ -284,7 +381,6 @@ def fetch_trend_data(query: str, season: str = "", region: str = "global", demog
                 "demographic": demographic,
                 "trend_source": trend_source,
             },
-            timeout=120,
         )
 
         if response.status_code == 200:
@@ -299,7 +395,7 @@ def fetch_trend_data(query: str, season: str = "", region: str = "global", demog
             style_names = ", ".join(s.get("name", "") for s in styles[:3])
             material_names = ", ".join(m.get("name", "") for m in materials[:3])
 
-            return {
+            out = {
                 "action": "trend_data",
                 "status": "success",
                 "trending_colors": color_names,
@@ -313,6 +409,8 @@ def fetch_trend_data(query: str, season: str = "", region: str = "global", demog
                     f"Key materials: {material_names}."
                 ),
             }
+            _dedup_set("trends", query, out)
+            return out
         else:
             return {
                 "action": "trend_data",
@@ -333,7 +431,7 @@ def _build_validate_message(score, badge, violations, violation_summary, result)
     return f"Brand compliance score: {score}% — {badge_label}. Found {violation_summary}. {fixes} can be auto-fixed."
 
 
-def validate_brand_compliance(product_description: str = "", color_scheme: str = "") -> dict:
+async def validate_brand_compliance(product_description: str = "", color_scheme: str = "") -> dict:
     """
     Check how well a product design complies with brand guidelines.
     Call this when the user asks about brand compliance, validation, or guideline checks.
@@ -343,7 +441,8 @@ def validate_brand_compliance(product_description: str = "", color_scheme: str =
     logger.info(f"[TOOL: validate_brand_compliance] desc='{product_description[:50] if product_description else ''}'")
 
     try:
-        response = requests.post(
+        client = _get_http_client()
+        response = await client.post(
             f"{MAIN_BACKEND_URL}/validate",
             json={
                 "prompt": {
@@ -356,7 +455,6 @@ def validate_brand_compliance(product_description: str = "", color_scheme: str =
                 },
                 "brand_id": "default",
             },
-            timeout=30,
         )
 
         if response.status_code == 200:
@@ -410,7 +508,7 @@ def validate_brand_compliance(product_description: str = "", color_scheme: str =
         }
 
 
-def generate_image_variation(variation_description: str, category: str = "apparel") -> dict:
+async def generate_image_variation(variation_description: str, category: str = "apparel") -> dict:
     """
     Generate a completely new product image from scratch based on a description.
     Call this when the user wants a new variation or a fresh image, not an edit.
@@ -419,34 +517,59 @@ def generate_image_variation(variation_description: str, category: str = "appare
     """
     logger.info(f"[TOOL: generate_image_variation] desc='{variation_description}'")
 
+    cached = _dedup_get("variation", variation_description)
+    if cached:
+        return cached
+
+    session_data = _get_session_data()
+
     try:
-        response = requests.post(
-            f"{MAIN_BACKEND_URL}/generate-image",
+        client = _get_http_client()
+        response = await client.post(
+            f"{MAIN_BACKEND_URL}/adk/design-companion",
             json={
-                "product_description": variation_description,
-                "category": category,
-                "brand_id": "default",
+                "session_id": f"voice-variation-{id(session_data)}",
+                "user_message": f"Generate a new image variation: {variation_description}",
+                "product_context": {
+                    "name": session_data.get("product_name", ""),
+                    "category": category,
+                },
+                "image_base64": session_data.get("image_base64", ""),
+                "brand_id": session_data.get("brand_id", ""),
             },
-            timeout=120,
         )
 
         if response.status_code == 200:
             result = response.json()
-            has_image = result.get("success", False) and result.get("image_base64")
+            action = result.get("action") or {}
+            new_image = action.get("image_base64", "")
 
-            return {
+            if new_image:
+                session_data["image_base64"] = new_image
+                for sid, sdata in _voice_sessions.items():
+                    if sdata is session_data:
+                        _pending_images.setdefault(sid, []).append({
+                            "image_base64": new_image,
+                            "description": variation_description,
+                        })
+                        break
+                logger.info("[TOOL: generate_image_variation] Image generated and queued for frontend")
+
+            out = {
                 "action": "image_updated",
                 "status": "success",
                 "description": variation_description,
-                "has_new_image": has_image,
-                "message": f"Generated new variation: {variation_description}. The image is ready for review.",
+                "has_new_image": bool(new_image),
+                "message": result.get("response", f"Generated new variation: {variation_description}."),
             }
+            _dedup_set("variation", variation_description, out)
+            return out
         else:
             return {
                 "action": "image_updated",
                 "status": "error",
                 "description": variation_description,
-                "message": "Image generation failed. Please try again with a different description.",
+                "message": "Image generation failed. Please try again.",
             }
     except Exception as e:
         logger.error(f"[TOOL: generate_image_variation] Error: {e}")
@@ -479,7 +602,7 @@ def save_design() -> dict:
 
 # --- Voice-only tools (not in design_agent.py) ---
 
-def generate_ad_video(campaign_brief: str, ad_style: str = "cinematic") -> dict:
+async def generate_ad_video(campaign_brief: str, ad_style: str = "cinematic") -> dict:
     """
     Execute ad video generation by calling the ad video endpoint.
     The voice agent calls this when the user says:
@@ -491,7 +614,8 @@ def generate_ad_video(campaign_brief: str, ad_style: str = "cinematic") -> dict:
     logger.info(f"[TOOL: generate_ad_video] brief='{campaign_brief}', style='{ad_style}'")
 
     try:
-        response = requests.post(
+        client = _get_http_client()
+        response = await client.post(
             f"{MAIN_BACKEND_URL}/generate-ad-video",
             json={
                 "product": {"name": "Current product", "description": campaign_brief},
@@ -499,7 +623,6 @@ def generate_ad_video(campaign_brief: str, ad_style: str = "cinematic") -> dict:
                 "campaign_brief": campaign_brief,
                 "ad_style": ad_style,
             },
-            timeout=30,
         )
 
         if response.status_code == 200:
@@ -575,7 +698,7 @@ def navigate_to_page(page_name: str) -> dict:
         }
 
 
-def start_collection_generation(
+async def start_collection_generation(
     season: str = "",
     region: str = "Global",
     demographic: str = "Millennials",
@@ -590,7 +713,8 @@ def start_collection_generation(
     logger.info(f"[TOOL: start_collection] season={season}, region={region}, count={product_count}")
 
     try:
-        response = requests.post(
+        client = _get_http_client()
+        response = await client.post(
             f"{MAIN_BACKEND_URL}/generate-collection",
             json={
                 "brand_id": "default",
@@ -601,7 +725,6 @@ def start_collection_generation(
                 "product_count": product_count,
                 "trend_source": "regional",
             },
-            timeout=30,
         )
 
         if response.status_code == 200:
@@ -790,6 +913,11 @@ async def voice_companion_endpoint(websocket: WebSocket, session_id: str) -> Non
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
         session_resumption=types.SessionResumptionConfig(),
+        # Prevent context overflow for long audio sessions (~25 tok/s audio)
+        context_window_compression=types.ContextWindowCompressionConfig(
+            trigger_tokens=100000,
+            sliding_window=types.SlidingWindow(target_tokens=80000),
+        ),
     )
 
     live_request_queue = LiveRequestQueue()
@@ -906,14 +1034,20 @@ async def voice_companion_endpoint(websocket: WebSocket, session_id: str) -> Non
             return
 
         try:
-            # Send full instruction after session starts
+            # Send instruction + greeting as a SINGLE message (two messages = agent responds twice)
             async def send_instruction():
                 await asyncio.sleep(0.2)
-                instruction = types.Content(
-                    parts=[types.Part(text=_build_instruction(context))]
+                product_name = context.get("product_name")
+                instruction_text = _build_instruction(context)
+                if product_name:
+                    instruction_text += f"\n\nNow introduce yourself briefly as Lux and comment on the product '{product_name}' that the user is viewing."
+                else:
+                    instruction_text += "\n\nNow introduce yourself briefly as Lux, the voice design companion for TrendSync. Be warm and invite the user to try something."
+                message = types.Content(
+                    parts=[types.Part(text=instruction_text)]
                 )
-                live_request_queue.send_content(instruction)
-                logger.info("[voice_companion] instruction sent, session_id=%s", session_id)
+                live_request_queue.send_content(message)
+                logger.info("[voice_companion] instruction + greeting sent, session_id=%s", session_id)
 
             asyncio.create_task(send_instruction())
 
@@ -923,41 +1057,79 @@ async def voice_companion_endpoint(websocket: WebSocket, session_id: str) -> Non
                 live_request_queue=live_request_queue,
                 run_config=run_config,
             ):
-                event_json = event.model_dump_json(exclude_none=True, by_alias=True)
+                # Check if this event contains audio data
+                has_audio = (
+                    event.content
+                    and event.content.parts
+                    and any(
+                        p.inline_data and p.inline_data.mime_type
+                        and p.inline_data.mime_type.startswith("audio/")
+                        for p in event.content.parts
+                    )
+                )
 
-                # Log tool calls and transcriptions
-                if "inputTranscription" in event_json:
+                if has_audio:
+                    # Send raw PCM audio as binary WebSocket frame (no base64 overhead)
+                    for part in event.content.parts:
+                        if part.inline_data and part.inline_data.data:
+                            await websocket.send_bytes(part.inline_data.data)
+                else:
+                    # Non-audio events: send as JSON text
+                    event_json = event.model_dump_json(exclude_none=True, by_alias=True)
+
+                    if "inputTranscription" in event_json:
+                        try:
+                            ed = json.loads(event_json)
+                            text = ed.get("inputTranscription", {}).get("text", "")
+                            if text:
+                                logger.info("[voice_companion] USER SAID: %s", text)
+                        except Exception:
+                            pass
+
+                    if "outputTranscription" in event_json:
+                        try:
+                            ed = json.loads(event_json)
+                            text = ed.get("outputTranscription", {}).get("text", "")
+                            if text:
+                                logger.info("[voice_companion] AGENT SAID: %s", text)
+                        except Exception:
+                            pass
+
+                    await websocket.send_text(event_json)
+
+                # Deliver any pending images from tool calls to the frontend
+                pending = _pending_images.pop(session_id, [])
+                for img_data in pending:
                     try:
-                        ed = json.loads(event_json)
-                        text = ed.get("inputTranscription", {}).get("text", "")
-                        if text:
-                            logger.info("[voice_companion] USER SAID: %s", text)
-                    except Exception:
-                        pass
-
-                if "outputTranscription" in event_json:
-                    try:
-                        ed = json.loads(event_json)
-                        text = ed.get("outputTranscription", {}).get("text", "")
-                        if text:
-                            logger.info("[voice_companion] AGENT SAID: %s", text)
-                    except Exception:
-                        pass
-
-                await websocket.send_text(event_json)
+                        await websocket.send_text(json.dumps({
+                            "type": "image_updated",
+                            "image_base64": img_data.get("image_base64", ""),
+                            "compliance_score": img_data.get("compliance_score"),
+                            "edit_instruction": img_data.get("edit_instruction"),
+                            "description": img_data.get("description"),
+                        }))
+                        b64_len = len(img_data.get("image_base64", ""))
+                        logger.info("[voice_companion] Sent image_updated to frontend (%d chars base64)", b64_len)
+                    except Exception as e:
+                        logger.error("[voice_companion] Failed to send image: %s", e)
 
             logger.info("[voice_companion] run_live completed session_id=%s", session_id)
 
         except Exception as e:
-            logger.exception("Voice companion session failed")
-            try:
-                await websocket.send_text(json.dumps({
-                    "type": "error",
-                    "message": "Voice session failed.",
-                    "detail": repr(e),
-                }))
-            except Exception:
-                pass
+            # Code 1000 is a normal close (user stopped the session) — not an error
+            err_str = str(e)
+            if "1000" in err_str:
+                logger.info("[voice_companion] Session closed normally (1000)")
+            else:
+                logger.exception("Voice companion session failed")
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": "Voice session failed.",
+                        "detail": repr(e),
+                    }))
+                except Exception:
+                    pass
 
     try:
         await asyncio.gather(upstream_task(), downstream_task())

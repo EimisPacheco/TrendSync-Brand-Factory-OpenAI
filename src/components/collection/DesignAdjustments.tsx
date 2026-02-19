@@ -55,11 +55,22 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
   // Local image URL — survives parent DB-polling so edits don't revert
   const [localImageUrl, setLocalImageUrl] = useState<string>(item.image_url || '');
 
-  // Sync local image when a different product is loaded (item.id changes)
+  // Sync local image when a different product is loaded
   useEffect(() => {
     setLocalImageUrl(item.image_url || '');
     setHasUnsavedChanges(false);
   }, [item.id]);
+
+  // Sync when voice agent updates image externally (data: URLs only).
+  // Normal DB-polling returns the original http(s) URL, so we ignore those
+  // to prevent reverting unsaved edits.
+  useEffect(() => {
+    if (item.image_url?.startsWith('data:') && item.image_url !== localImageUrl) {
+      setLocalImageUrl(item.image_url);
+      setHasUnsavedChanges(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.image_url]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
 
@@ -476,14 +487,21 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
                 <span className="text-xs text-pastel-muted capitalize">{item.subcategory}</span>
               </div>
               {item.design_spec_json?.colors && item.design_spec_json.colors.length > 0 && (
-                <div className="flex gap-2 mt-2">
+                <div className="space-y-1.5 mt-2">
                   {item.design_spec_json.colors.slice(0, 4).map((color, i) => (
-                    <div
+                    <button
                       key={i}
-                      className="w-6 h-6 rounded shadow-neumorphic-sm"
-                      style={{ backgroundColor: color.hex }}
-                      title={color.name}
-                    />
+                      onClick={() => setInput(`Change the color from ${color.name} (${color.hex}) to `)}
+                      className="flex items-center gap-2 w-full px-2 py-1 rounded-lg hover:bg-pastel-bg-dark/10 transition-colors cursor-pointer group"
+                      title={`Click to use "${color.name}" in chat`}
+                    >
+                      <div
+                        className="w-5 h-5 rounded shadow-neumorphic-sm flex-shrink-0 group-hover:scale-110 transition-transform"
+                        style={{ backgroundColor: color.hex }}
+                      />
+                      <span className="text-xs font-medium text-pastel-navy truncate">{color.name}</span>
+                      <span className="text-[10px] text-pastel-muted font-mono ml-auto">{color.hex}</span>
+                    </button>
                   ))}
                 </div>
               )}

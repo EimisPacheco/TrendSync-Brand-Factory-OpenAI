@@ -303,9 +303,10 @@ export async function getPipelineStatus(pipelineId: string) {
 // ---------- Voice Companion ----------
 
 export function getVoiceCompanionWsUrl(sessionId: string): string {
-  const wsProtocol = API_BASE.startsWith("https") ? "wss" : "ws";
-  const wsHost = API_BASE.replace(/^https?:\/\//, "");
-  return `${wsProtocol}://${wsHost}/ws/voice-companion/${sessionId}`;
+  // Connect directly to voice companion backend (port 8002)
+  // instead of proxying through main backend (port 8000) which returns 403
+  const voiceBase = import.meta.env.VITE_VOICE_COMPANION_URL || "ws://localhost:8002";
+  return `${voiceBase}/ws/voice-companion/${sessionId}`;
 }
 
 /** Start payload for voice companion WebSocket — include productImageBase64 for vision analysis */

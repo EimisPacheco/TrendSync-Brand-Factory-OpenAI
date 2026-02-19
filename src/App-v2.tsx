@@ -26,6 +26,7 @@ import {
 } from './services/db-storage';
 import { DEFAULT_BRAND_STYLE } from './lib/defaults';
 import { fetchCelebrities as apiFetchCelebrities } from './lib/api-client';
+import { VoiceCompanion } from './components/voice/VoiceCompanion';
 
 function AppContent() {
   const { user, loading: authLoading } = useAuth();
@@ -350,6 +351,21 @@ function AppContent() {
             }
           } catch (e) {
             // Silently fail
+          }
+        }}
+      />
+      <VoiceCompanion
+        currentView={currentView}
+        onNavigate={setCurrentView}
+        brandName="My Brand"
+        productItem={selectedItem}
+        brandId={brandId}
+        onUpdateItem={(updates) => {
+          if (selectedItem) {
+            setSelectedItem(prev => prev ? { ...prev, ...updates } : prev);
+            setItems(prev => prev.map(i =>
+              i.id === selectedItem.id ? { ...i, ...updates } : i
+            ));
           }
         }}
       />
