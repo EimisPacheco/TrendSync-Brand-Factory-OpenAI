@@ -1,27 +1,29 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Rocket, Search, Palette, Image, Video, RefreshCw, ExternalLink } from 'lucide-react';
+import { Rocket, Search, Palette, Image, Video, RefreshCw } from 'lucide-react';
 import { startPipeline, getPipelineStatus } from '../../lib/api-client';
-import type { PipelineConfig, PipelineStatus } from '../../lib/api-client';
+import type { PipelineConfig, PipelineStatus, PipelineResult } from '../../lib/api-client';
 import { PipelineStepCard } from './PipelineStepCard';
 
 interface PipelineRunnerProps {
   config: PipelineConfig;
   disabled?: boolean;
+  onComplete?: (result: PipelineResult) => void;
 }
 
 const STEPS = [
   { key: 'trends', label: 'Trend Analysis', description: 'Analyzing real-time fashion trends with Google Search', icon: <Search size={16} /> },
-  { key: 'collection', label: 'Collection Planning', description: 'Generating collection plan with AI thinking', icon: <Palette size={16} /> },
-  { key: 'images', label: 'Image Generation', description: 'Creating product images with Gemini Flash Image', icon: <Image size={16} /> },
-  { key: 'video', label: 'Ad Video', description: '"Future You" ad video with Veo 3.1', icon: <Video size={16} /> },
+  { key: 'collection', label: 'Collection Planning', description: 'Generating collection plan with Gemini 3 Pro thinking', icon: <Palette size={16} /> },
+  { key: 'images', label: 'Image Generation', description: 'Creating product images with Gemini 3 Pro Image', icon: <Image size={16} /> },
+  { key: 'video', label: 'Product Videos', description: 'Per-product showcase videos with Veo 3.1', icon: <Video size={16} /> },
 ];
 
-export function PipelineRunner({ config, disabled }: PipelineRunnerProps) {
+export function PipelineRunner({ config, disabled, onComplete }: PipelineRunnerProps) {
   const [pipelineId, setPipelineId] = useState<string | null>(null);
   const [status, setStatus] = useState<PipelineStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const completedRef = useRef(false);
 
   const stopPolling = useCallback(() => {
     if (pollingRef.current) {
@@ -34,27 +36,71 @@ export function PipelineRunner({ config, disabled }: PipelineRunnerProps) {
     return () => stopPolling();
   }, [stopPolling]);
 
+  const lastLoggedRef = useRef<string>('');
+  const loggedStepsRef = useRef<Set<string>>(new Set());
+
   const pollStatus = useCallback(async (id: string) => {
     try {
       const s = await getPipelineStatus(id);
       setStatus(s);
+
+      // Log each step transition
+      const logKey = `${s.current_step}:${s.message}`;
+      if (logKey !== lastLoggedRef.current) {
+        lastLoggedRef.current = logKey;
+        const stepLabel = STEPS.find(st => st.key === s.current_step)?.label || s.current_step;
+        console.log(
+          `%c[Pipeline] [${stepLabel}] ${s.message}`,
+          'color: #6366f1; font-weight: bold'
+        );
+        if (s.step_data && Object.keys(s.step_data).length > 0) {
+          console.log(`%c[Pipeline] [${stepLabel}] step_data:`, 'color: #8b5cf6', s.step_data);
+        }
+      }
+
+      // Log per-step AI results (persisted, not overwritten)
+      if (s.step_results) {
+        for (const [stepKey, stepResult] of Object.entries(s.step_results)) {
+          if (!loggedStepsRef.current.has(stepKey) && stepResult && Object.keys(stepResult).length > 0) {
+            loggedStepsRef.current.add(stepKey);
+            const stepLabel = STEPS.find(st => st.key === stepKey)?.label || stepKey;
+            console.log(
+              `%c[Pipeline] [${stepLabel}] AI RESULT:`,
+              'color: #f59e0b; font-weight: bold; font-size: 13px',
+              stepResult
+            );
+          }
+        }
+      }
+
       if (s.status === 'complete' || s.status === 'failed') {
         stopPolling();
         if (s.status === 'failed') {
+          console.error('[Pipeline] FAILED:', s.error);
           setError(s.error || 'Pipeline failed');
+        }
+        if (s.status === 'complete' && s.result) {
+          console.log('%c[Pipeline] COMPLETE — Full result:', 'color: #10b981; font-weight: bold', s.result);
+          if (onComplete && !completedRef.current) {
+            completedRef.current = true;
+            onComplete(s.result);
+          }
         }
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to fetch status');
       stopPolling();
     }
-  }, [stopPolling]);
+  }, [stopPolling, onComplete]);
 
   const handleStart = async () => {
     setStarting(true);
     setError(null);
     setStatus(null);
     setPipelineId(null);
+    completedRef.current = false;
+    lastLoggedRef.current = '';
+    loggedStepsRef.current = new Set();
 
     try {
       const res = await startPipeline(config);
@@ -128,32 +174,9 @@ export function PipelineRunner({ config, disabled }: PipelineRunnerProps) {
               <p className="text-pastel-navy font-medium">{status.result.product_count} items</p>
             </div>
           </div>
-          {status.result.products.length > 0 && (
-            <div className="mt-3 flex gap-2 overflow-x-auto">
-              {status.result.products.map((p, i) => (
-                <div key={i} className="flex-shrink-0 text-center">
-                  {p.image_url ? (
-                    <img src={p.image_url} alt={p.name} className="w-16 h-16 object-cover rounded-lg neumorphic-sm" />
-                  ) : (
-                    <div className="w-16 h-16 rounded-lg neumorphic-sm flex items-center justify-center text-pastel-muted">
-                      <Image size={20} />
-                    </div>
-                  )}
-                  <p className="text-xs text-pastel-muted mt-1 truncate max-w-[64px]">{p.name}</p>
-                </div>
-              ))}
-            </div>
-          )}
-          {status.result.ad_video && (
-            <a
-              href={String((status.result.ad_video as Record<string, unknown>).stitched_video_url || '#')}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-3 inline-flex items-center gap-1 text-xs text-pastel-accent hover:underline"
-            >
-              <ExternalLink size={12} /> View Ad Video
-            </a>
-          )}
+          <p className="mt-3 text-xs text-emerald-600">
+            Collection saved to library. View it in the Product Gallery below.
+          </p>
         </div>
       )}
 

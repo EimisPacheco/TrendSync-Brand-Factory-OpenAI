@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
 import { MapPin, Calendar, Users, Shirt, Footprints, Watch, Sparkles, TrendingUp, Loader, Globe, Star, RefreshCw, Rocket } from 'lucide-react';
 import { fetchTrends } from '../../lib/api-client';
-import type { PipelineConfig } from '../../lib/api-client';
+import type { PipelineConfig, PipelineResult } from '../../lib/api-client';
 import type { Celebrity } from '../../types/database';
 import { PipelineRunner } from '../pipeline/PipelineRunner';
 
 interface CollectionPlannerProps {
   onGenerateCollection: (config: CollectionConfig) => void;
+  onPipelineComplete?: (result: PipelineResult) => void;
   loading?: boolean;
+  brandId?: string;
   celebrityInsights?: Celebrity[];
   onFetchCelebrityInsights?: () => Promise<Celebrity[]>;
 }
@@ -57,7 +59,7 @@ const DEMOGRAPHICS = [
   { id: 'luxury', name: 'Luxury Market', description: 'High-end, exclusive, timeless' },
 ];
 
-export function CollectionPlanner({ onGenerateCollection, loading, celebrityInsights, onFetchCelebrityInsights }: CollectionPlannerProps) {
+export function CollectionPlanner({ onGenerateCollection, onPipelineComplete, loading, brandId, celebrityInsights, onFetchCelebrityInsights }: CollectionPlannerProps) {
   const [activeTab, setActiveTab] = useState<'regional' | 'celebrity' | 'pipeline'>('regional');
   const [celebrities, setCelebrities] = useState<Celebrity[]>(celebrityInsights || []);
   const [loadingCelebrities, setLoadingCelebrities] = useState(false);
@@ -308,7 +310,7 @@ The TodoWrite tool hasn't been used recently. If you're working on tasks that wo
 
             <PipelineRunner
               config={{
-                brand_id: '',
+                brand_id: brandId || '',
                 season: SEASONS.find(s => s.id === config.season)?.name || config.season,
                 region: REGIONS.find(r => r.id === config.region)?.name || config.region,
                 demographic: DEMOGRAPHICS.find(d => d.id === config.demographic)?.name || config.demographic,
@@ -317,9 +319,10 @@ The TodoWrite tool hasn't been used recently. If you're working on tasks that wo
                   .map(([k]) => k),
                 product_count: totalProducts,
                 trend_source: config.trendSource,
-                generate_ad_video: false,
+                generate_ad_video: true,
               } satisfies PipelineConfig}
               disabled={totalProducts === 0}
+              onComplete={onPipelineComplete}
             />
           </div>
         </>

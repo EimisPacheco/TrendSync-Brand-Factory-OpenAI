@@ -186,6 +186,62 @@ export class EmailService {
       };
     }
   }
+  /**
+   * Send a login notification email to the admin.
+   */
+  public async sendLoginNotification(userEmail: string): Promise<void> {
+    if (!this.resendApiKey) {
+      console.warn('Resend API key not configured — skipping login notification email');
+      return;
+    }
+
+    const now = new Date();
+    const timestamp = now.toLocaleString('en-US', {
+      dateStyle: 'full',
+      timeStyle: 'medium',
+    });
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #2C3E50; border-bottom: 2px solid #3498DB; padding-bottom: 10px;">
+          Login Alert — TrendSync Brand Factory
+        </h2>
+        <div style="background: #F8F9FA; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <p><strong>User:</strong> ${userEmail}</p>
+          <p><strong>Time:</strong> ${timestamp}</p>
+          <p><strong>Browser:</strong> ${navigator.userAgent}</p>
+        </div>
+        <p style="color: #666; font-size: 12px; margin-top: 30px;">
+          This is an automated notification from TrendSync Brand Factory.
+        </p>
+      </div>
+    `;
+
+    try {
+      const response = await fetch('/api/resend/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.resendApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: 'TrendSync Brand Factory <onboarding@resend.dev>',
+          to: 'eimispacheco@gmail.com',
+          subject: `Login Alert: ${userEmail} signed in`,
+          html,
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        console.error('Login notification email failed:', err);
+      } else {
+        console.log('Login notification email sent for', userEmail);
+      }
+    } catch (error) {
+      console.error('Login notification email error:', error);
+    }
+  }
 }
 
 export const emailService = new EmailService();

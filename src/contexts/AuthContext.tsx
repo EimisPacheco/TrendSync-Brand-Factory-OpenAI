@@ -3,6 +3,7 @@ import type { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import type { UserProfile } from '../types/database';
 import { loginAuditStorage } from '../services/db-storage';
+import { emailService } from '../services/email-service';
 
 interface AuthState {
   user: User | null;
@@ -99,6 +100,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!error && data.user) {
       // Fire-and-forget: log the login event for audit/monitoring
       loginAuditStorage.log(data.user.id).catch(() => {});
+      // Fire-and-forget: send login notification email
+      emailService.sendLoginNotification(data.user.email || email).catch(() => {});
     }
     return { error: error as Error | null };
   }

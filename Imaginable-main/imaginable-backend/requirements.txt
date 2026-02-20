@@ -1,5 +1,0 @@
-# Core AI SDK - manages all web framework and AI dependencies
-google-adk==1.18.0
-
-# Utilities
-python-dotenv==1.0.1

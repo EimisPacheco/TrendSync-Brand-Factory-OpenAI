@@ -25,7 +25,8 @@ import {
   collectionStorage,
 } from './services/db-storage';
 import { DEFAULT_BRAND_STYLE } from './lib/defaults';
-import { fetchCelebrities as apiFetchCelebrities } from './lib/api-client';
+import { fetchCelebrities as apiFetchCelebrities, generateLookbook } from './lib/api-client';
+import type { PipelineResult } from './lib/api-client';
 import { VoiceCompanion } from './components/voice/VoiceCompanion';
 
 function AppContent() {
@@ -37,7 +38,8 @@ function AppContent() {
   const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null);
   const [selectedItem, setSelectedItem] = useState<CollectionItem | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
-  const [initialDetailTab, setInitialDetailTab] = useState<'overview' | 'fibo' | 'validation' | 'techpack' | 'design'>('overview');
+  const [initialDetailTab, setInitialDetailTab] = useState<'overview' | 'fibo' | 'validation' | 'techpack' | 'design' | 'video'>('overview');
+  const [exportingLookbook, setExportingLookbook] = useState(false);
   const [appReady, setAppReady] = useState(false);
   const [showLanding, setShowLanding] = useState(true);
   const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null);
@@ -212,6 +214,142 @@ function AppContent() {
     }
   };
 
+  const handlePipelineComplete = async (result: PipelineResult) => {
+    if (!brandId || !user) {
+      toast.error('Brand not initialized');
+      return;
+    }
+
+    const toastId = toast.loading('Saving collection to library...');
+
+    try {
+      // 1. Create the collection record
+      const apparelCount = result.products.filter(p => !['footwear', 'accessories'].includes((p.category || '').toLowerCase())).length;
+      const footwearCount = result.products.filter(p => (p.category || '').toLowerCase().includes('footwear')).length;
+      const accessoriesCount = result.products.filter(p => (p.category || '').toLowerCase().includes('accessor')).length;
+
+      const collection = await collectionStorage.create({
+        brand_id: brandId,
+        name: result.collection_name || 'Pipeline Collection',
+        season: result.season || '',
+        region: result.region || '',
+        target_demographic: result.demographic || '',
+        status: 'complete',
+        collection_plan_json: {
+          productCount: {
+            apparel: apparelCount,
+            footwear: footwearCount,
+            accessories: accessoriesCount,
+          },
+          heroItems: result.products.slice(0, 1).map(p => p.name),
+          colorStory: result.products.map(p => p.color_story).filter(Boolean).join('; '),
+          trendAlignment: result.trend_insights?.summary || '',
+        },
+        trend_insights_json: {
+          colors: result.trend_insights?.colors?.map(c => ({
+            name: c.name,
+            hex: c.hex || '',
+            confidence: 0.8,
+            description: '',
+          })) || [],
+          materials: result.trend_insights?.materials?.map(m => ({
+            name: m.name,
+            confidence: 0.8,
+            description: '',
+          })) || [],
+          silhouettes: result.trend_insights?.silhouettes?.map(s => ({
+            name: s.name,
+            confidence: 0.8,
+            description: '',
+          })) || [],
+          themes: [],
+          summary: result.trend_insights?.summary || '',
+        },
+      });
+
+      // 2. Create collection items
+      const itemsToCreate = result.products.map((p, i) => {
+        const imgSrc = p.image_base64
+          ? `data:image/png;base64,${p.image_base64}`
+          : p.image_url;
+
+        // Map pipeline category to DB category
+        let category: 'apparel' | 'footwear' | 'accessories' = 'apparel';
+        const cat = (p.category || '').toLowerCase();
+        if (cat.includes('shoe') || cat.includes('boot') || cat.includes('sneaker') || cat.includes('footwear')) {
+          category = 'footwear';
+        } else if (cat.includes('accessor') || cat.includes('bag') || cat.includes('hat') || cat.includes('jewelry')) {
+          category = 'accessories';
+        }
+
+        // Parse colors from color_story — extract hex codes
+        const colorMatch = p.color_story?.match(/#[0-9A-Fa-f]{6}/g) || [];
+        let colors = colorMatch.map((hex: string, ci: number) => ({
+          name: ci === 0 ? 'Primary' : 'Secondary',
+          hex,
+          usage: ci === 0 ? 'primary' : 'accent',
+        }));
+
+        // Fallback: if no hex codes found in color_story, use trend insight colors
+        if (colors.length === 0 && result.trend_insights?.colors?.length > 0) {
+          const trendColors = result.trend_insights.colors.slice(0, 2);
+          colors = trendColors.map((tc, ci) => ({
+            name: tc.name || (ci === 0 ? 'Primary' : 'Secondary'),
+            hex: tc.hex || '#808080',
+            usage: ci === 0 ? 'primary' : 'accent',
+          }));
+        }
+
+        return {
+          collection_id: collection.id,
+          sku: `PIPE-${Date.now()}-${i}`,
+          name: p.name,
+          category,
+          subcategory: p.category || 'tops',
+          design_story: p.description || '',
+          target_persona: '',
+          price_tier: 'mid' as const,
+          design_spec_json: {
+            silhouette: '',
+            fit: '',
+            colors,
+            materials: [{ name: p.material || '', placement: 'primary' }],
+            details: [],
+            inspiration: p.color_story || '',
+          },
+          fibo_prompt_json: {
+            positive: p.description || '',
+            negative: '',
+            seed: Math.floor(Math.random() * 999999),
+            steps: 30,
+            guidance: 7.5,
+          },
+          brand_compliance_score: p.compliance_score ?? 0,
+          status: 'complete' as const,
+          image_url: imgSrc || null,
+          video_url: null,
+        };
+      });
+
+      const savedItems = await collectionItemStorage.createMany(itemsToCreate);
+
+      // 3. Update React state to show gallery
+      setActiveCollectionId(collection.id);
+      setItems(savedItems);
+
+      toast.success(`Collection "${result.collection_name}" saved!`, {
+        id: toastId,
+        description: `${savedItems.length} products saved to library.`,
+      });
+    } catch (error) {
+      console.error('Failed to save pipeline results:', error);
+      toast.error('Failed to save collection', {
+        id: toastId,
+        description: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  };
+
   const handleSelectItem = (item: CollectionItem) => {
     setSelectedItem(item);
     setInitialDetailTab('overview');
@@ -247,6 +385,54 @@ function AppContent() {
     }
   };
 
+  const handleExportLookbook = async () => {
+    if (items.length === 0) return;
+    setExportingLookbook(true);
+    try {
+      const products = items.map(item => ({
+        product: {
+          name: item.name,
+          sku: item.sku,
+          category: item.category,
+          subcategory: item.subcategory,
+          price_tier: item.price_tier,
+          target_persona: item.target_persona,
+          description: item.design_story || '',
+          material: item.design_spec_json?.materials?.map((m: { name?: string }) => typeof m === 'string' ? m : m.name).join(', ') || '',
+          color_story: item.design_spec_json?.colors?.map((c: { name?: string; hex?: string }) => typeof c === 'string' ? c : `${c.name} (${c.hex})`).join(', ') || '',
+        },
+      }));
+
+      const result = await generateLookbook({
+        products,
+        brand_name: 'TrendSync',
+      });
+
+      // Download the PDF
+      const binaryString = atob(result.pdf_base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `lookbook-${new Date().toISOString().split('T')[0]}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success(`Lookbook exported with ${result.product_count} products!`);
+    } catch (error) {
+      console.error('Lookbook export failed:', error);
+      toast.error('Failed to export lookbook');
+    } finally {
+      setExportingLookbook(false);
+    }
+  };
+
   const handleFetchCelebrityInsights = async () => {
     const res = await apiFetchCelebrities('millennials');
     return res.celebrities;
@@ -273,7 +459,9 @@ function AppContent() {
           <div className="space-y-8">
             <CollectionPlanner
               onGenerateCollection={handleGenerateCollection}
+              onPipelineComplete={handlePipelineComplete}
               loading={generating}
+              brandId={brandId}
               onFetchCelebrityInsights={handleFetchCelebrityInsights}
             />
             {generating && generationProgress && (
@@ -295,6 +483,8 @@ function AppContent() {
                 onViewValidation={handleViewValidation}
                 onViewTechPack={handleViewTechPack}
                 onDeleteItem={handleDeleteCollectionItem}
+                onExportLookbook={handleExportLookbook}
+                exportingLookbook={exportingLookbook}
               />
             ) : null}
           </div>

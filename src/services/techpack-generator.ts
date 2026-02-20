@@ -603,6 +603,42 @@ Ensure all specifications are professional, detailed, and suitable for manufactu
     }
     return 'As per order quantity';
   }
+
+  /**
+   * Convert a saved raw JSON (from DB) back into a TechPack object.
+   * The raw JSON is what toRawJson() produced.
+   */
+  formatFromSaved(raw: Record<string, any>, item: CollectionItem): TechPack {
+    return this.formatTechPack(raw, item);
+  }
+
+  /**
+   * Convert a TechPack into a plain JSON object for DB storage.
+   * Extracts the content from each section so it can be round-tripped.
+   */
+  toRawJson(techPack: TechPack): Record<string, any> {
+    const extractContent = (section: TechPackSection) => {
+      if (section.subsections && section.subsections.length > 0) {
+        const result: Record<string, any> = {};
+        for (const sub of section.subsections) {
+          const key = sub.title.replace(/[^a-zA-Z0-9]/g, '').replace(/^./, c => c.toLowerCase());
+          result[key] = sub.content;
+        }
+        return result;
+      }
+      return section.content;
+    };
+
+    return {
+      fabricType: extractContent(techPack.fabricType),
+      measurements: extractContent(techPack.measurements),
+      graphics: extractContent(techPack.graphics),
+      adornments: extractContent(techPack.adornments),
+      construction: extractContent(techPack.construction),
+      qualityControl: extractContent(techPack.qualityControl),
+      packaging: extractContent(techPack.packaging),
+    };
+  }
 }
 
 export const techPackGenerator = new TechPackGenerator();

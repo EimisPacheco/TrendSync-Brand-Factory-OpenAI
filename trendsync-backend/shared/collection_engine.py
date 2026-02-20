@@ -16,7 +16,7 @@ from google.genai import types
 
 GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-3-pro-preview")
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 
 MAX_VALIDATION_RETRIES = 3
 
@@ -120,10 +120,10 @@ REQUIRED JSON SCHEMA:
       "name": "Product Name",
       "category": "tops|bottoms|dresses|outerwear|accessories",
       "description": "Detailed product description including silhouette, fit, and key features",
-      "color_story": "Primary color (#HEX) with secondary color (#HEX) accents",
+      "color_story": "#1A2B3C Deep Navy primary, #F5E6D3 Cream accent — MUST include actual hex codes",
       "material": "Primary fabric/material",
       "target_price": "$XX - $XXX",
-      "image_prompt": "Detailed prompt for generating a professional product photo. Include: garment type, color, fabric texture, construction details, styling. Specify: clean white studio background, professional flat-lay photography, even lighting, high resolution, commercial quality."
+      "image_prompt": "Single product centered in a square frame against solid white background. Product fills 70-80% of frame. Front-facing view. No mannequin, no human model. Include: garment type, color, fabric texture, construction details."
     }}
   ]
 }}
@@ -131,11 +131,12 @@ REQUIRED JSON SCHEMA:
 RULES:
 1. Distribute products evenly across requested categories
 2. Each product must have a unique, detailed image_prompt suitable for AI image generation
-3. Color story should blend brand palette with trend colors
-4. Materials should reflect trend materials where possible
-5. Descriptions should be detailed enough for a tech pack
-6. Price ranges should be realistic for the demographic
-7. All image_prompts must specify: white/light studio background, no human model, product-only, flat-lay or ghost mannequin style
+3. CRITICAL: color_story MUST always start with hex codes like "#1A2B3C Color Name, #F5E6D3 Color Name". Never omit hex codes.
+4. Color story should blend brand palette with trend colors
+5. Materials should reflect trend materials where possible
+6. Descriptions should be detailed enough for a tech pack
+7. Price ranges should be realistic for the demographic
+8. CRITICAL IMAGE RULES: Each image_prompt MUST specify: exactly ONE single product, centered in square frame, solid white background, product fills 70-80% of frame, entire product visible with no cropping, front-facing view only, no mannequin, no human model, no multiple angles or side-by-side views
 """
 
     response = client.models.generate_content(
@@ -149,6 +150,10 @@ RULES:
             response_mime_type="application/json",
         ),
     )
+
+    print(f"[CollectionEngine] === RAW AI RESPONSE (Phase A: Collection Plan) ===")
+    print(response.text[:5000])
+    print(f"[CollectionEngine] === END RAW RESPONSE ===")
 
     plan = json.loads(response.text)
     # Handle list response
@@ -213,6 +218,10 @@ Return the complete product JSON with the enhanced image_prompt."""
             response_mime_type="application/json",
         ),
     )
+
+    print(f"[CollectionEngine] === RAW AI RESPONSE (Phase B: Product '{product_stub.get('name', '')}') ===")
+    print(response.text[:3000])
+    print(f"[CollectionEngine] === END RAW RESPONSE ===")
 
     expanded = json.loads(response.text)
     if isinstance(expanded, list) and len(expanded) > 0:
@@ -289,6 +298,10 @@ Return the corrected collection JSON."""
             response_mime_type="application/json",
         ),
     )
+
+    print(f"[CollectionEngine] === RAW AI RESPONSE (Repair) ===")
+    print(response.text[:3000])
+    print(f"[CollectionEngine] === END RAW RESPONSE ===")
 
     repaired = json.loads(response.text)
     if isinstance(repaired, list) and len(repaired) > 0:

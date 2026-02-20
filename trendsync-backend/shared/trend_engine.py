@@ -227,6 +227,9 @@ def fetch_trends(
 
     t1 = time.time()
     print(f"[TrendEngine] Gemini response received in {t1 - t0:.1f}s ({len(response.text)} chars)")
+    print(f"[TrendEngine] === RAW AI RESPONSE (Trends) ===")
+    print(response.text[:3000])
+    print(f"[TrendEngine] === END RAW RESPONSE ===")
 
     trend_data = _extract_json(response.text)
     result = _transform_to_insights(

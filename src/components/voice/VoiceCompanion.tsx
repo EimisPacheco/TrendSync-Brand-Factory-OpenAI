@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { X, Loader2, Wand2 } from 'lucide-react';
-import { getVoiceCompanionWsUrl } from '../../lib/api-client';
+import { getVoiceCompanionWsUrl, saveDesignAnalysis } from '../../lib/api-client';
+import { collectionItemStorage } from '../../services/db-storage';
+import { toast } from 'sonner';
 import type { View } from '../layout';
 import type { CollectionItem } from '../../types/database';
 
@@ -98,6 +100,25 @@ async function imageUrlToBase64(url: string): Promise<string> {
   }
 }
 
+/** Convert an image URL (or data URI) to raw base64 string. */
+async function getImageBase64(imageUrl: string | null | undefined): Promise<string> {
+  if (!imageUrl) return '';
+  if (imageUrl.startsWith('data:')) {
+    return imageUrl.split(',')[1] || '';
+  }
+  try {
+    const resp = await fetch(imageUrl);
+    const blob = await resp.blob();
+    const reader = new FileReader();
+    return await new Promise<string>((resolve) => {
+      reader.onload = () => resolve((reader.result as string).split(',')[1] || '');
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return '';
+  }
+}
+
 interface VoiceCompanionProps {
   /** Current page/view the user is on */
   currentView: string;
@@ -128,9 +149,13 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
   const streamRef = useRef<MediaStream | null>(null);
   const isActiveRef = useRef(false);
 
-  // Keep a stable ref to onUpdateItem so WebSocket handlers always see the latest version
+  // Keep stable refs so WebSocket handlers always see the latest values
   const onUpdateItemRef = useRef(onUpdateItem);
   useEffect(() => { onUpdateItemRef.current = onUpdateItem; }, [onUpdateItem]);
+  const productItemRef = useRef(productItem);
+  useEffect(() => { productItemRef.current = productItem; }, [productItem]);
+  const brandIdRef = useRef(brandId);
+  useEffect(() => { brandIdRef.current = brandId; }, [brandId]);
 
   // Map backend route strings to app View names
   const routeToView: Record<string, View> = {
@@ -173,6 +198,55 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
         case 'validation':
           if (action.status === 'success') onNavigate('brand-guardian');
           break;
+        case 'save_design': {
+          // Persist the current (edited) image + updated specs to DB — same as typing version
+          const item = productItemRef.current;
+          const currentBrandId = brandIdRef.current;
+          if (!item) break;
+          (async () => {
+            try {
+              const currentImageUrl = item.image_url || '';
+              const imageBase64 = await getImageBase64(currentImageUrl);
+
+              const analysis = await saveDesignAnalysis({
+                image_base64: imageBase64,
+                product_context: {
+                  name: item.name,
+                  category: item.category,
+                  subcategory: item.subcategory,
+                  colors: item.design_spec_json?.colors,
+                  materials: item.design_spec_json?.materials,
+                  inspiration: item.design_spec_json?.inspiration,
+                },
+                brand_id: currentBrandId || '',
+              });
+
+              const updates: Partial<CollectionItem> = {
+                image_url: currentImageUrl,
+                updated_at: new Date().toISOString(),
+              };
+              if (analysis.success && analysis.design_spec_json && Object.keys(analysis.design_spec_json).length > 0) {
+                updates.design_spec_json = analysis.design_spec_json as CollectionItem['design_spec_json'];
+              }
+              if (analysis.success && analysis.fibo_prompt_json && Object.keys(analysis.fibo_prompt_json).length > 0) {
+                updates.fibo_prompt_json = analysis.fibo_prompt_json as CollectionItem['fibo_prompt_json'];
+              }
+              if (analysis.brand_compliance_score) {
+                updates.brand_compliance_score = analysis.brand_compliance_score;
+              }
+
+              await collectionItemStorage.update(item.id, updates);
+              const cb = onUpdateItemRef.current;
+              if (cb) cb(updates);
+              toast.success('Design saved — all tabs updated!');
+              console.log('[VoiceCompanion] Design saved to DB for item', item.id);
+            } catch (err) {
+              console.error('[VoiceCompanion] Failed to save design:', err);
+              toast.error('Failed to save design. Please try again.');
+            }
+          })();
+          break;
+        }
       }
     },
     [onNavigate],

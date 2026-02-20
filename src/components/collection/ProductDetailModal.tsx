@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   Eye, Shield, FileText, Copy, Check, ChevronDown, ChevronUp,
   Palette, Layers, Camera, Lightbulb, Image, Hash,
-  Package, Target, Star, Loader2, Download, Send, MessageSquare
+  Package, Target, Star, Loader2, Download, Send, MessageSquare, Video
 } from 'lucide-react';
 import type { CollectionItem } from '../../types/database';
 import { Modal } from '../ui/Modal';
@@ -12,19 +12,20 @@ import { techPackGenerator, type TechPack } from '../../services/techpack-genera
 import { PDFGenerator } from '../../services/pdf-generator';
 import { emailService } from '../../services/email-service';
 import { DesignAdjustments } from './DesignAdjustments';
+import { AdvertisementVideo } from './AdvertisementVideo';
 import { toast } from 'sonner';
 
 interface ProductDetailModalProps {
   item: CollectionItem | null;
   isOpen: boolean;
   brandId: string;
-  initialTab?: 'overview' | 'fibo' | 'validation' | 'techpack' | 'design';
+  initialTab?: 'overview' | 'fibo' | 'validation' | 'techpack' | 'design' | 'video';
   onClose: () => void;
   onItemUpdated?: (updatedItem: Partial<CollectionItem> & { id: string }) => void;
 }
 
 export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overview', onClose, onItemUpdated }: ProductDetailModalProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'fibo' | 'validation' | 'techpack' | 'design'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'overview' | 'fibo' | 'validation' | 'techpack' | 'design' | 'video'>(initialTab);
   const [expandedSections, setExpandedSections] = useState<string[]>(['description', 'objects']);
   const [copied, setCopied] = useState(false);
   const [techPack, setTechPack] = useState<TechPack | null>(null);
@@ -33,6 +34,7 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState('');
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [currentItem, setCurrentItem] = useState<CollectionItem | null>(item);
   const [validationData, setValidationData] = useState<any>(null);
 
@@ -73,17 +75,39 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
 
   useEffect(() => {
     if (currentItem && activeTab === 'techpack' && !techPack && !loadingTechPack) {
-      generateTechPack();
+      loadOrGenerateTechPack();
     }
   }, [currentItem, activeTab]);
 
-  const generateTechPack = async () => {
+  const loadOrGenerateTechPack = async () => {
     if (!currentItem) return;
 
     setLoadingTechPack(true);
     try {
+      // 1. Check if tech pack already exists in DB
+      if (currentItem.techpack_generated && currentItem.techpack_json) {
+        console.log('Loading saved tech pack from DB');
+        const savedTechPack = techPackGenerator.formatFromSaved(currentItem.techpack_json, currentItem);
+        setTechPack(savedTechPack);
+        return;
+      }
+
+      // 2. Generate new tech pack via Gemini
       const generatedTechPack = await techPackGenerator.generateTechPack(currentItem);
       setTechPack(generatedTechPack);
+
+      // 3. Save to DB so it becomes the single source of truth
+      const rawTechPack = techPackGenerator.toRawJson(generatedTechPack);
+      await collectionItemStorage.update(currentItem.id, {
+        techpack_json: rawTechPack,
+        techpack_generated: true,
+      });
+      // Update local state
+      setCurrentItem(prev => prev ? { ...prev, techpack_json: rawTechPack, techpack_generated: true } : prev);
+      if (onItemUpdated) {
+        onItemUpdated({ id: currentItem.id, techpack_json: rawTechPack, techpack_generated: true });
+      }
+      toast.success('Tech pack generated and saved');
     } catch (error) {
       console.error('Error generating tech pack:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -93,21 +117,42 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
     }
   };
 
-  const downloadTechPackPDF = () => {
+  const downloadTechPackPDF = async () => {
     if (!currentItem || !techPack) return;
 
-    const pdfGen = new PDFGenerator();
-    const fileName = pdfGen.downloadPDF(currentItem, techPack);
-    toast.success(`Tech pack downloaded: ${fileName}`);
+    // Guard: tech pack must be saved to DB before PDF can be generated
+    if (!currentItem.techpack_generated || !currentItem.techpack_json) {
+      toast.error('Tech pack has not been saved yet. Please generate the tech pack first.');
+      return;
+    }
+
+    setDownloadingPdf(true);
+    try {
+      const pdfGen = new PDFGenerator();
+      const fileName = await pdfGen.downloadPDF(currentItem, techPack);
+      toast.success(`Tech pack downloaded: ${fileName}`);
+    } catch (error) {
+      console.error('PDF download failed:', error);
+      const msg = error instanceof Error ? error.message : 'Failed to generate PDF';
+      toast.error(msg);
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   const sendTechPackEmail = async () => {
     if (!currentItem || !techPack || !recipientEmail) return;
 
+    // Guard: tech pack must be saved to DB before PDF can be generated
+    if (!currentItem.techpack_generated || !currentItem.techpack_json) {
+      toast.error('Tech pack has not been saved yet. Please generate the tech pack first.');
+      return;
+    }
+
     setSendingEmail(true);
     try {
       const pdfGen = new PDFGenerator();
-      const pdfBlob = pdfGen.generateTechPackPDF(currentItem, techPack);
+      const pdfBlob = await pdfGen.generateTechPackPDF(currentItem, techPack);
 
       const result = await emailService.sendTechPack(recipientEmail, currentItem, techPack, pdfBlob);
 
@@ -136,12 +181,18 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
       onItemUpdated({ id: currentItem.id, ...updates });
     }
 
-    // If design spec was updated, clear tech pack so it regenerates
+    // If design spec was updated, clear tech pack so it regenerates from scratch
     if (updates.design_spec_json) {
       setTechPack(null);
       setLoadingTechPack(false);
+      // Clear DB flag so a fresh tech pack is generated next time
+      setCurrentItem(prev => prev ? { ...prev, techpack_generated: false, techpack_json: null } : prev);
+      collectionItemStorage.update(currentItem.id, {
+        techpack_generated: false,
+        techpack_json: null,
+      }).catch(() => {});
       if (activeTab === 'techpack') {
-        generateTechPack();
+        loadOrGenerateTechPack();
       }
     }
   };
@@ -555,11 +606,11 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
                   </button>
                   <button
                     onClick={downloadTechPackPDF}
-                    disabled={!techPack}
+                    disabled={!techPack || downloadingPdf}
                     className="btn-soft px-3 py-1.5 flex items-center gap-2 text-sm disabled:opacity-50"
                   >
-                    <Download size={16} />
-                    Download PDF
+                    {downloadingPdf ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+                    {downloadingPdf ? 'Generating...' : 'Download PDF'}
                   </button>
                   <button
                     onClick={() => setEmailDialogOpen(true)}
@@ -659,7 +710,7 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
                   )}
 
                   <button
-                    onClick={generateTechPack}
+                    onClick={loadOrGenerateTechPack}
                     className="mt-4 btn-primary px-4 py-2 text-sm"
                   >
                     Generate Comprehensive Tech Pack
@@ -673,6 +724,15 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
       case 'design':
         return (
           <DesignAdjustments
+            item={currentItem}
+            brandId={brandId}
+            onUpdateItem={handleUpdateItem}
+          />
+        );
+
+      case 'video':
+        return (
+          <AdvertisementVideo
             item={currentItem}
             brandId={brandId}
             onUpdateItem={handleUpdateItem}
@@ -753,6 +813,19 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
             <div className="flex items-center gap-2">
               <MessageSquare size={16} />
               Adjust Design
+            </div>
+          </button>
+          <button
+            onClick={() => setActiveTab('video')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'video'
+                ? 'neumorphic-pressed text-pastel-accent'
+                : 'neumorphic-sm text-pastel-text hover:shadow-neumorphic'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Video size={16} />
+              Ad Video
             </div>
           </button>
         </div>

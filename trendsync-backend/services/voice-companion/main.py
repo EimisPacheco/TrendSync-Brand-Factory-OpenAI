@@ -1,8 +1,10 @@
 """
 TrendSync Voice Design Companion Service
 A voice-controlled design assistant using Google ADK with Gemini Live.
-Each tool EXECUTES a real action by calling the main backend via HTTP.
-All AI calls go through ADK on Vertex AI — no direct genai.Client usage.
+
+Tool logic for the 7 shared tools lives in shared/design_tools.py —
+the SAME code used by the typing agent (design_agent.py).
+Voice-only tools (ad video, navigation, collection gen) remain here.
 Port 8002.
 """
 
@@ -33,6 +35,8 @@ from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 
+from shared import design_tools
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -41,12 +45,11 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------
 
 VOICE_MODEL = os.environ.get("VOICE_MODEL", "gemini-live-2.5-flash-native-audio")
-GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-3-pro-preview")
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
 LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 MAIN_BACKEND_URL = os.environ.get("MAIN_BACKEND_URL", "http://localhost:8000")
 
-# Voice model needs us-central1; design tools route through main backend (ADK on Vertex AI)
+# Voice model needs us-central1; design tools run locally via shared modules
 if LOCATION == "global":
     LOCATION = "us-central1"
     os.environ["GOOGLE_CLOUD_LOCATION"] = "us-central1"
@@ -75,7 +78,7 @@ def _dedup_set(tool_name: str, key: str, result: dict) -> None:
     """Cache a tool result for deduplication."""
     _tool_cache[f"{tool_name}:{key}"] = (time.time(), result)
 
-# Shared async HTTP client (reused across tool calls, non-blocking)
+# Shared async HTTP client (for voice-only tools that still need HTTP)
 _http_client: httpx.AsyncClient | None = None
 
 def _get_http_client() -> httpx.AsyncClient:
@@ -110,9 +113,22 @@ def _get_session_data() -> dict:
     return {}
 
 
+def _queue_image_for_frontend(session_data: dict, image_base64: str, **extra: Any) -> None:
+    """Queue an edited/generated image to be sent to the frontend via WebSocket."""
+    session_data["image_base64"] = image_base64
+    for sid, sdata in _voice_sessions.items():
+        if sdata is session_data:
+            _pending_images.setdefault(sid, []).append({
+                "image_base64": image_base64,
+                **extra,
+            })
+            break
+    logger.info("[Voice] Image queued for frontend (%d chars base64)", len(image_base64))
+
+
 # ==========================================================================
-# TOOL IMPLEMENTATIONS — Standardized names matching design_agent.py
-# All AI calls route through the main backend (ADK on Vertex AI).
+# SHARED TOOL WRAPPERS — call shared/design_tools.py directly
+# Uses asyncio.to_thread() so sync Gemini calls don't block the event loop.
 # ==========================================================================
 
 async def analyze_product_image(question: str) -> dict:
@@ -132,53 +148,20 @@ async def analyze_product_image(question: str) -> dict:
         return cached
 
     session_data = _get_session_data()
-    image_base64 = session_data.get("image_base64", "")
+    has_image = bool(session_data.get("image_base64"))
 
-    if not image_base64:
-        return {
-            "action": "design_advice",
-            "status": "no_image",
-            "message": "I don't have a product image to analyze right now. Please make sure you're viewing a product with an image.",
-        }
+    product_context = {
+        "name": session_data.get("product_name", ""),
+        "category": session_data.get("product_category", ""),
+        "subcategory": session_data.get("product_subcategory", ""),
+        "colors": session_data.get("product_colors", []),
+        "materials": session_data.get("product_materials", []),
+    }
+    brand_style = session_data.get("brand_style", {})
 
-    try:
-        client = _get_http_client()
-        response = await client.post(
-            f"{MAIN_BACKEND_URL}/adk/design-companion",
-            json={
-                "session_id": f"voice-analyze-{id(session_data)}",
-                "user_message": question,
-                "product_context": {
-                    "name": session_data.get("product_name", ""),
-                    "category": session_data.get("product_category", ""),
-                    "subcategory": session_data.get("product_subcategory", ""),
-                    "colors": session_data.get("product_colors", []),
-                    "materials": session_data.get("product_materials", []),
-                },
-                "image_base64": image_base64,
-                "brand_id": session_data.get("brand_id", ""),
-            },
-        )
-
-        if response.status_code == 200:
-            result = response.json()
-            out = {
-                "action": "design_advice",
-                "status": "success",
-                "has_image": True,
-                "message": result.get("response", "I can see the product but couldn't generate detailed feedback."),
-            }
-            _dedup_set("analyze", question, out)
-            return out
-        else:
-            return {
-                "action": "design_advice",
-                "status": "error",
-                "message": f"Could not analyze the image: backend returned {response.status_code}",
-            }
-    except Exception as e:
-        logger.error(f"[TOOL: analyze_product_image] Error: {e}")
-        return {"action": "design_advice", "status": "error", "message": str(e)}
+    result = design_tools.analyze_product(question, has_image, product_context, brand_style)
+    _dedup_set("analyze", question, result)
+    return result
 
 
 async def edit_product_image(edit_instruction: str) -> dict:
@@ -204,63 +187,14 @@ async def edit_product_image(edit_instruction: str) -> dict:
             "message": "No product image available to edit. Please make sure you're viewing a product.",
         }
 
-    try:
-        client = _get_http_client()
-        response = await client.post(
-            f"{MAIN_BACKEND_URL}/adk/design-companion",
-            json={
-                "session_id": f"voice-edit-{id(session_data)}",
-                "user_message": edit_instruction,
-                "product_context": {
-                    "name": session_data.get("product_name", ""),
-                    "category": session_data.get("product_category", ""),
-                    "subcategory": session_data.get("product_subcategory", ""),
-                    "colors": session_data.get("product_colors", []),
-                    "materials": session_data.get("product_materials", []),
-                },
-                "image_base64": image_base64,
-                "brand_id": session_data.get("brand_id", ""),
-            },
-        )
+    new_b64, result = await asyncio.to_thread(design_tools.edit_image, edit_instruction, image_base64)
 
-        if response.status_code == 200:
-            result = response.json()
-            action = result.get("action") or {}
-            new_image = action.get("image_base64", "")
+    if new_b64:
+        _queue_image_for_frontend(session_data, new_b64, edit_instruction=edit_instruction)
+        result["has_new_image"] = True
 
-            if new_image:
-                session_data["image_base64"] = new_image
-                for sid, sdata in _voice_sessions.items():
-                    if sdata is session_data:
-                        _pending_images.setdefault(sid, []).append({
-                            "image_base64": new_image,
-                            "edit_instruction": edit_instruction,
-                        })
-                        break
-                logger.info("[TOOL: edit_product_image] Image edited and queued for frontend")
-
-            out = {
-                "action": "image_updated",
-                "status": "success",
-                "edit_instruction": edit_instruction,
-                "has_new_image": bool(new_image),
-                "message": result.get("response", f"Applied edit: {edit_instruction}."),
-            }
-            _dedup_set("edit", edit_instruction, out)
-            return out
-        else:
-            return {
-                "action": "image_updated",
-                "status": "error",
-                "message": f"Image edit failed: backend returned {response.status_code}",
-            }
-    except Exception as e:
-        logger.error(f"[TOOL: edit_product_image] Error: {e}")
-        return {
-            "action": "image_updated",
-            "status": "error",
-            "message": f"Could not edit image: {str(e)}",
-        }
+    _dedup_set("edit", edit_instruction, result)
+    return result
 
 
 async def make_brand_compliant() -> dict:
@@ -278,64 +212,25 @@ async def make_brand_compliant() -> dict:
 
     session_data = _get_session_data()
     image_base64 = session_data.get("image_base64", "")
+    brand_style = session_data.get("brand_style", {})
+    product_context = {
+        "name": session_data.get("product_name", ""),
+        "category": session_data.get("product_category", ""),
+    }
 
-    if not image_base64:
-        return {
-            "action": "brand_compliant",
-            "status": "error",
-            "message": "No product image available to adjust.",
-        }
+    new_b64, result = await asyncio.to_thread(
+        design_tools.make_compliant, image_base64, brand_style, product_context
+    )
 
-    try:
-        client = _get_http_client()
-        response = await client.post(
-            f"{MAIN_BACKEND_URL}/adk/design-companion",
-            json={
-                "session_id": f"voice-comply-{id(session_data)}",
-                "user_message": "Make this product fully brand-compliant. Adjust colors and design to match the brand guidelines.",
-                "product_context": {
-                    "name": session_data.get("product_name", ""),
-                    "category": session_data.get("product_category", ""),
-                },
-                "image_base64": image_base64,
-                "brand_id": session_data.get("brand_id", ""),
-            },
+    if new_b64:
+        _queue_image_for_frontend(
+            session_data, new_b64,
+            compliance_score=result.get("compliance_score"),
         )
+        result["has_new_image"] = True
 
-        if response.status_code == 200:
-            result = response.json()
-            action = result.get("action", {}) or {}
-            new_image = action.get("image_base64", "")
-
-            if new_image:
-                session_data["image_base64"] = new_image
-                for sid, sdata in _voice_sessions.items():
-                    if sdata is session_data:
-                        _pending_images.setdefault(sid, []).append({
-                            "image_base64": new_image,
-                            "compliance_score": action.get("compliance_score"),
-                        })
-                        break
-                logger.info("[TOOL: make_brand_compliant] Image updated and queued for frontend")
-
-            out = {
-                "action": "brand_compliant",
-                "status": "success",
-                "compliance_score": action.get("compliance_score"),
-                "has_new_image": bool(new_image),
-                "message": result.get("response", "Brand compliance adjustments applied."),
-            }
-            _dedup_set("comply", "brand", out)
-            return out
-        else:
-            return {
-                "action": "brand_compliant",
-                "status": "error",
-                "message": f"Could not apply brand compliance: backend returned {response.status_code}",
-            }
-    except Exception as e:
-        logger.error(f"[TOOL: make_brand_compliant] Error: {e}")
-        return {"action": "brand_compliant", "status": "error", "message": str(e)}
+    _dedup_set("comply", "brand", result)
+    return result
 
 
 async def fetch_trend_data(query: str, season: str = "", region: str = "global", demographic: str = "millennials") -> dict:
@@ -351,84 +246,9 @@ async def fetch_trend_data(query: str, season: str = "", region: str = "global",
     if cached:
         return cached
 
-    try:
-        query_lower = query.lower()
-        trend_source = "regional"
-        if "celebrity" in query_lower or "celeb" in query_lower:
-            trend_source = "celebrity"
-        if not season:
-            if "summer" in query_lower:
-                season = "Summer 2025"
-            elif "fall" in query_lower or "autumn" in query_lower:
-                season = "Fall 2025"
-            elif "winter" in query_lower:
-                season = "Winter 2025"
-            elif "spring" in query_lower:
-                season = "Spring 2025"
-        if "gen z" in query_lower:
-            demographic = "Gen Z"
-        elif "luxury" in query_lower:
-            demographic = "Luxury"
-        elif "streetwear" in query_lower:
-            demographic = "Streetwear"
-
-        client = _get_http_client()
-        response = await client.post(
-            f"{MAIN_BACKEND_URL}/trends",
-            json={
-                "season": season,
-                "region": region,
-                "demographic": demographic,
-                "trend_source": trend_source,
-            },
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            insights = data.get("insights", {})
-
-            colors = insights.get("colors", [])
-            styles = insights.get("silhouettes", [])
-            materials = insights.get("materials", [])
-
-            color_names = ", ".join(c.get("name", "") for c in colors[:4])
-            style_names = ", ".join(s.get("name", "") for s in styles[:3])
-            material_names = ", ".join(m.get("name", "") for m in materials[:3])
-
-            out = {
-                "action": "trend_data",
-                "status": "success",
-                "trending_colors": color_names,
-                "trending_styles": style_names,
-                "trending_materials": material_names,
-                "summary": insights.get("summary", ""),
-                "message": (
-                    f"{season} trends for {region}: "
-                    f"Top colors are {color_names}. "
-                    f"Popular styles: {style_names}. "
-                    f"Key materials: {material_names}."
-                ),
-            }
-            _dedup_set("trends", query, out)
-            return out
-        else:
-            return {
-                "action": "trend_data",
-                "status": "error",
-                "message": f"Trend query failed: {response.text[:200]}",
-            }
-    except Exception as e:
-        logger.error(f"[TOOL: fetch_trend_data] Error: {e}")
-        return {"action": "trend_data", "status": "error", "message": str(e)}
-
-
-def _build_validate_message(score, badge, violations, violation_summary, result):
-    """Build a voice-friendly validation summary (avoids f-string backslash issues)."""
-    badge_label = badge.get("label", "N/A")
-    fixes = result.get("auto_fixes_available", 0)
-    if not violations:
-        return f"Brand compliance score: {score}% — {badge_label}. No violations found — your design is fully on-brand!"
-    return f"Brand compliance score: {score}% — {badge_label}. Found {violation_summary}. {fixes} can be auto-fixed."
+    result = await asyncio.to_thread(design_tools.get_trends, query, season, region, demographic)
+    _dedup_set("trends", query, result)
+    return result
 
 
 async def validate_brand_compliance(product_description: str = "", color_scheme: str = "") -> dict:
@@ -440,72 +260,13 @@ async def validate_brand_compliance(product_description: str = "", color_scheme:
     """
     logger.info(f"[TOOL: validate_brand_compliance] desc='{product_description[:50] if product_description else ''}'")
 
-    try:
-        client = _get_http_client()
-        response = await client.post(
-            f"{MAIN_BACKEND_URL}/validate",
-            json={
-                "prompt": {
-                    "description": product_description or "Current product design",
-                    "color_scheme": color_scheme,
-                    "lighting": "",
-                    "camera_angle": "",
-                    "negative_prompt": "",
-                    "objects": [],
-                },
-                "brand_id": "default",
-            },
-        )
+    session_data = _get_session_data()
+    brand_style = session_data.get("brand_style", {})
 
-        if response.status_code == 200:
-            result = response.json()
-            score = result.get("compliance_score", 0)
-            violations = result.get("violations", [])
-            badge = result.get("badge", {})
-
-            violation_summary = ""
-            if violations:
-                critical = [v for v in violations if v.get("severity") == "critical"]
-                warnings = [v for v in violations if v.get("severity") == "warning"]
-                suggestions = [v for v in violations if v.get("severity") == "suggestion"]
-                parts = []
-                if critical:
-                    parts.append(f"{len(critical)} critical issues")
-                if warnings:
-                    parts.append(f"{len(warnings)} warnings")
-                if suggestions:
-                    parts.append(f"{len(suggestions)} suggestions")
-                violation_summary = ", ".join(parts)
-
-            return {
-                "action": "validation",
-                "status": "success",
-                "compliance_score": score,
-                "badge": badge.get("label", "Unknown"),
-                "total_violations": len(violations),
-                "violation_summary": violation_summary,
-                "is_valid": result.get("is_valid", False),
-                "message": _build_validate_message(score, badge, violations, violation_summary, result),
-            }
-        elif response.status_code == 404:
-            return {
-                "action": "validation",
-                "status": "no_brand_style",
-                "message": "No brand style is configured yet. Please set up your brand style first in the Brand Style Editor.",
-            }
-        else:
-            return {
-                "action": "validation",
-                "status": "error",
-                "message": f"Validation failed: {response.text[:200]}",
-            }
-    except Exception as e:
-        logger.error(f"[TOOL: validate_brand_compliance] Error: {e}")
-        return {
-            "action": "validation",
-            "status": "error",
-            "message": f"Could not validate design: {str(e)}",
-        }
+    result = await asyncio.to_thread(
+        design_tools.check_compliance, product_description, color_scheme, brand_style
+    )
+    return result
 
 
 async def generate_image_variation(variation_description: str, category: str = "apparel") -> dict:
@@ -522,62 +283,18 @@ async def generate_image_variation(variation_description: str, category: str = "
         return cached
 
     session_data = _get_session_data()
+    brand_style = session_data.get("brand_style", {})
 
-    try:
-        client = _get_http_client()
-        response = await client.post(
-            f"{MAIN_BACKEND_URL}/adk/design-companion",
-            json={
-                "session_id": f"voice-variation-{id(session_data)}",
-                "user_message": f"Generate a new image variation: {variation_description}",
-                "product_context": {
-                    "name": session_data.get("product_name", ""),
-                    "category": category,
-                },
-                "image_base64": session_data.get("image_base64", ""),
-                "brand_id": session_data.get("brand_id", ""),
-            },
-        )
+    new_b64, result = await asyncio.to_thread(
+        design_tools.generate_variation, variation_description, category, brand_style
+    )
 
-        if response.status_code == 200:
-            result = response.json()
-            action = result.get("action") or {}
-            new_image = action.get("image_base64", "")
+    if new_b64:
+        _queue_image_for_frontend(session_data, new_b64, description=variation_description)
+        result["has_new_image"] = True
 
-            if new_image:
-                session_data["image_base64"] = new_image
-                for sid, sdata in _voice_sessions.items():
-                    if sdata is session_data:
-                        _pending_images.setdefault(sid, []).append({
-                            "image_base64": new_image,
-                            "description": variation_description,
-                        })
-                        break
-                logger.info("[TOOL: generate_image_variation] Image generated and queued for frontend")
-
-            out = {
-                "action": "image_updated",
-                "status": "success",
-                "description": variation_description,
-                "has_new_image": bool(new_image),
-                "message": result.get("response", f"Generated new variation: {variation_description}."),
-            }
-            _dedup_set("variation", variation_description, out)
-            return out
-        else:
-            return {
-                "action": "image_updated",
-                "status": "error",
-                "description": variation_description,
-                "message": "Image generation failed. Please try again.",
-            }
-    except Exception as e:
-        logger.error(f"[TOOL: generate_image_variation] Error: {e}")
-        return {
-            "action": "image_updated",
-            "status": "error",
-            "message": f"Could not generate variation: {str(e)}",
-        }
+    _dedup_set("variation", variation_description, result)
+    return result
 
 
 def save_design() -> dict:
@@ -588,19 +305,15 @@ def save_design() -> dict:
     'Save my changes', 'Let's go with this one'
     """
     logger.info("[TOOL: save_design]")
-
     session_data = _get_session_data()
     product_name = session_data.get("product_name", "this product")
-
-    return {
-        "action": "save_design",
-        "status": "success",
-        "product_name": product_name,
-        "message": f"Design for '{product_name}' saved to the collection!",
-    }
+    return design_tools.save_design_signal(product_name)
 
 
-# --- Voice-only tools (not in design_agent.py) ---
+# ==========================================================================
+# VOICE-ONLY TOOLS — these don't exist in the typing agent
+# They still use HTTP because they call endpoints that manage their own state.
+# ==========================================================================
 
 async def generate_ad_video(campaign_brief: str, ad_style: str = "cinematic") -> dict:
     """
@@ -776,11 +489,11 @@ def _build_instruction(context: dict) -> str:
         "=== YOUR TOOLS (ALL execute real actions) ===",
         "",
         "1. analyze_product_image(question)",
-        "   → EXECUTES: Uses Gemini 3 Pro vision (via ADK on Vertex AI) to SEE the actual product image",
+        "   → EXECUTES: Uses Gemini vision to SEE the actual product image",
         "   → Examples: 'What do you think?', 'How can I improve this?', 'Describe what you see'",
         "",
         "2. edit_product_image(edit_instruction)",
-        "   → EXECUTES: Calls the image editing AI to modify the product image",
+        "   → EXECUTES: Calls Gemini Flash Image to modify the product image",
         "   → Examples: 'Make the collar wider', 'Change the fabric to silk', 'Use a deeper blue'",
         "",
         "3. make_brand_compliant()",
@@ -792,7 +505,7 @@ def _build_instruction(context: dict) -> str:
         "   → Examples: 'What colors are trending in EU?', 'Spring 2025 trends for Gen Z'",
         "",
         "5. validate_brand_compliance(product_description, color_scheme)",
-        "   → EXECUTES: Runs the Brand Guardian AI to check brand compliance",
+        "   → EXECUTES: Runs the Brand Guardian to check brand compliance",
         "   → Examples: 'Does this pass brand guidelines?', 'Check compliance'",
         "",
         "6. generate_image_variation(variation_description, category)",
@@ -877,7 +590,7 @@ agent = Agent(
         "Always call the appropriate tool when the user asks for an action."
     ),
     description=(
-        "AI voice assistant that executes fashion design actions via the main backend: "
+        "AI voice assistant that executes fashion design actions: "
         "analyzes designs visually, edits images, applies brand compliance, queries trends, "
         "validates designs, generates images and videos, navigates the app, and creates collections."
     ),
@@ -887,6 +600,21 @@ agent = Agent(
 # ==========================================================================
 # WebSocket Endpoint
 # ==========================================================================
+
+async def _fetch_brand_style(brand_id: str) -> dict:
+    """Fetch brand style from main backend. Returns {} if not found."""
+    if not brand_id:
+        return {}
+    try:
+        client = _get_http_client()
+        response = await client.get(f"{MAIN_BACKEND_URL}/brands/{brand_id}/style")
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("style", {})
+    except Exception as e:
+        logger.warning(f"[Voice] Could not fetch brand style for {brand_id}: {e}")
+    return {}
+
 
 @app.websocket("/ws/voice-companion/{session_id}")
 async def voice_companion_endpoint(websocket: WebSocket, session_id: str) -> None:
@@ -967,7 +695,11 @@ async def voice_companion_endpoint(websocket: WebSocket, session_id: str) -> Non
                         "brand_name": payload.get("brandName"),
                         "current_page": payload.get("currentPage"),
                     }
-                    # Store full product context for tools that route through ADK backend
+
+                    brand_id = payload.get("brandId", "")
+                    brand_style = await _fetch_brand_style(brand_id)
+
+                    # Store full product context for tools
                     _voice_sessions[session_id] = {
                         "image_base64": payload.get("productImageBase64", ""),
                         "product_name": payload.get("productName", ""),
@@ -976,11 +708,14 @@ async def voice_companion_endpoint(websocket: WebSocket, session_id: str) -> Non
                         "product_subcategory": payload.get("productSubcategory", ""),
                         "product_colors": payload.get("productColors", []),
                         "product_materials": payload.get("productMaterials", []),
-                        "brand_id": payload.get("brandId", ""),
+                        "brand_id": brand_id,
                         "brand_name": payload.get("brandName", ""),
+                        "brand_style": brand_style,
                     }
                     if _voice_sessions[session_id]["image_base64"]:
                         logger.info("[voice_companion] product image received (%d chars)", len(_voice_sessions[session_id]["image_base64"]))
+                    if brand_style:
+                        logger.info("[voice_companion] brand style loaded for %s", brand_id)
                     started = True
                     session_ready.set()
                     logger.info(
@@ -1009,7 +744,10 @@ async def voice_companion_endpoint(websocket: WebSocket, session_id: str) -> Non
                     if payload.get("productCategory"):
                         session_store["product_category"] = payload["productCategory"]
                     if payload.get("brandId"):
-                        session_store["brand_id"] = payload["brandId"]
+                        new_brand_id = payload["brandId"]
+                        if new_brand_id != session_store.get("brand_id"):
+                            session_store["brand_id"] = new_brand_id
+                            session_store["brand_style"] = await _fetch_brand_style(new_brand_id)
                     logger.info("[voice_companion] context updated: %s", context)
                     continue
 

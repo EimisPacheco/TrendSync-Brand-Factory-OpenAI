@@ -196,6 +196,8 @@ export interface CollectionItem {
   status: 'planned' | 'designing' | 'generating' | 'validating' | 'complete' | 'failed';
   image_url?: string | null;
   video_url?: string | null;
+  techpack_json?: Record<string, any> | null;
+  techpack_generated?: boolean;
   created_at: string;
   updated_at: string;
 }

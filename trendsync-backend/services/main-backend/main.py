@@ -41,8 +41,12 @@ from shared import cache as redis_cache
 from shared.collection_engine import generate_collection
 from shared.image_generator import generate_product_image, edit_product_image
 from shared.techpack_generator import generate_techpack
-from shared.ad_video_engine import generate_complete_ad_video
+from shared.ad_video_engine import generate_complete_ad_video, generate_single_product_video
 from shared.pipeline_orchestrator import run_full_pipeline
+from shared.foxit_service import (
+    generate_full_techpack_pdf,
+    generate_lookbook as foxit_generate_lookbook,
+)
 
 from google.cloud import storage
 from google.genai import types as genai_types
@@ -110,7 +114,7 @@ def upload_image_to_gcs(image_base64: str, object_name: str) -> str:
         return url
     except Exception as e:
         print(f"[GCS] Upload failed: {e}")
-        return f"data:image/png;base64,{image_base64[:100]}..."
+        return f"data:image/png;base64,{image_base64}"
 
 
 # --------------------------------------------------------------------------
@@ -608,6 +612,104 @@ async def get_ad_video(ad_id: str):
 
 
 # --------------------------------------------------------------------------
+# Single Product Video (on-demand, 10-second Veo advertisement)
+# --------------------------------------------------------------------------
+
+PRODUCT_VIDEO_STATUS: Dict[str, Dict[str, Any]] = {}
+PRODUCT_VIDEOS: Dict[str, Any] = {}
+
+
+class ProductVideoRequest(BaseModel):
+    product: Dict[str, Any]
+    brand_id: str = ""
+    image_base64: Optional[str] = None
+
+
+def generate_product_video_background(video_id: str, params: Dict[str, Any]):
+    try:
+        PRODUCT_VIDEO_STATUS[video_id]["status"] = "generating"
+        PRODUCT_VIDEO_STATUS[video_id]["message"] = "Creating video prompt and generating with Veo..."
+        PRODUCT_VIDEO_STATUS[video_id]["updated_at"] = time.time()
+
+        brand_style = BRAND_STYLES.get(params.get("brand_id", ""), {})
+
+        video_data = generate_single_product_video(
+            product=params["product"],
+            brand_style=brand_style,
+            product_image_base64=params.get("image_base64"),
+        )
+
+        PRODUCT_VIDEOS[video_id] = video_data
+        PRODUCT_VIDEO_STATUS[video_id]["status"] = "complete"
+        PRODUCT_VIDEO_STATUS[video_id]["message"] = "Advertisement video ready!"
+        PRODUCT_VIDEO_STATUS[video_id]["updated_at"] = time.time()
+
+    except Exception as e:
+        print(f"[Product Video] {video_id} failed: {e}")
+        PRODUCT_VIDEO_STATUS[video_id]["status"] = "failed"
+        PRODUCT_VIDEO_STATUS[video_id]["error"] = str(e)
+        PRODUCT_VIDEO_STATUS[video_id]["updated_at"] = time.time()
+
+
+@app.post("/generate-product-video")
+async def start_product_video(request: ProductVideoRequest, background_tasks: BackgroundTasks):
+    video_id = f"pvid_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+
+    PRODUCT_VIDEO_STATUS[video_id] = {
+        "status": "pending",
+        "video_id": video_id,
+        "created_at": time.time(),
+        "updated_at": time.time(),
+        "message": "Starting video generation...",
+        "error": None,
+    }
+
+    background_tasks.add_task(
+        generate_product_video_background,
+        video_id,
+        request.model_dump(),
+    )
+
+    return {
+        "success": True,
+        "video_id": video_id,
+        "status": "pending",
+    }
+
+
+@app.get("/product-videos/{video_id}")
+async def get_product_video(video_id: str):
+    status = PRODUCT_VIDEO_STATUS.get(video_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if status["status"] in ("pending", "generating"):
+        return {
+            "video_id": video_id,
+            "status": status["status"],
+            "message": status.get("message", ""),
+        }
+    if status["status"] == "failed":
+        return {
+            "video_id": video_id,
+            "status": "failed",
+            "error": status.get("error"),
+        }
+
+    video = PRODUCT_VIDEOS.get(video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video data not found")
+
+    return {
+        "video_id": video_id,
+        "status": "complete",
+        "video_base64": video.get("video_base64"),
+        "video_url": video.get("video_url"),
+        "video_prompt": video.get("video_prompt", ""),
+    }
+
+
+# --------------------------------------------------------------------------
 # Full Pipeline Orchestrator (ADK-style multi-step agent pipeline)
 # --------------------------------------------------------------------------
 
@@ -627,6 +729,9 @@ class PipelineRequest(BaseModel):
 def run_pipeline_background(pipeline_id: str, config: Dict[str, Any]):
     """Background task: run the full pipeline with status updates."""
     try:
+        # Preserve config values for the result before popping
+        original_region = config.get("region", "")
+        original_demographic = config.get("demographic", "")
         brand_style = BRAND_STYLES.get(config.pop("brand_id", ""), {})
         gen_video = config.pop("generate_ad_video", False)
 
@@ -636,6 +741,8 @@ def run_pipeline_background(pipeline_id: str, config: Dict[str, Any]):
             PIPELINE_STATUS[pipeline_id]["updated_at"] = time.time()
             if data:
                 PIPELINE_STATUS[pipeline_id]["step_data"] = data
+                # Also store per-step results so they don't get overwritten
+                PIPELINE_STATUS[pipeline_id]["step_results"][step] = data
             # Track which steps are complete
             steps_order = ["trends", "collection", "images", "video"]
             if step in steps_order:
@@ -650,6 +757,7 @@ def run_pipeline_background(pipeline_id: str, config: Dict[str, Any]):
             generate_ad_video=gen_video,
         )
 
+        result["_config"] = {"region": original_region, "demographic": original_demographic}
         PIPELINES[pipeline_id] = result
         PIPELINE_STATUS[pipeline_id]["status"] = "complete"
         PIPELINE_STATUS[pipeline_id]["message"] = "Pipeline complete!"
@@ -676,6 +784,7 @@ async def start_pipeline(request: PipelineRequest, background_tasks: BackgroundT
         "message": "Starting pipeline...",
         "completed_steps": [],
         "step_data": {},
+        "step_results": {},
         "error": None,
     }
 
@@ -706,26 +815,47 @@ async def get_pipeline_status(pipeline_id: str):
         "message": status.get("message", ""),
         "completed_steps": status.get("completed_steps", []),
         "step_data": status.get("step_data", {}),
+        "step_results": status.get("step_results", {}),
         "error": status.get("error"),
     }
 
-    # If complete, include summary from the result
+    # If complete, include full result data for persistence
     if status["status"] == "complete" and pipeline_id in PIPELINES:
         pipeline = PIPELINES[pipeline_id]
         collection = pipeline.get("collection", {})
         products = collection.get("products", [])
+        trend_insights = pipeline.get("trend_insights", {})
         response["result"] = {
             "collection_id": collection.get("collection_id"),
             "collection_name": collection.get("name"),
+            "collection_description": collection.get("description", ""),
+            "season": collection.get("season", ""),
+            "region": pipeline.get("_config", {}).get("region", ""),
+            "demographic": pipeline.get("_config", {}).get("demographic", ""),
             "product_count": len(products),
             "products": [
                 {
                     "name": p.get("name"),
                     "category": p.get("category"),
+                    "description": p.get("description", ""),
+                    "color_story": p.get("color_story", ""),
+                    "material": p.get("material", ""),
+                    "target_price": p.get("target_price", ""),
                     "image_url": p.get("image_url"),
+                    "image_base64": p.get("image_base64"),
+                    "product_id": p.get("product_id", ""),
+                    "compliance_score": p.get("compliance_score", 0),
+                    "video_base64": p.get("video_base64"),
+                    "video_url": p.get("video_url"),
                 }
                 for p in products
             ],
+            "trend_insights": {
+                "summary": trend_insights.get("summary", ""),
+                "colors": trend_insights.get("colors", []),
+                "materials": trend_insights.get("materials", []),
+                "silhouettes": trend_insights.get("silhouettes", []),
+            },
             "ad_video": pipeline.get("ad_video"),
         }
 
@@ -1038,3 +1168,84 @@ async def voice_companion_proxy(websocket, session_id: str):
             await websocket.close(code=1011, reason=str(e))
         except Exception:
             pass
+
+
+# --------------------------------------------------------------------------
+# Foxit Document Generation + PDF Services
+# --------------------------------------------------------------------------
+
+class TechPackPDFRequest(BaseModel):
+    product: Dict[str, Any]
+    techpack: Optional[Dict[str, Any]] = None  # Saved techpack from DB (single source of truth)
+    brand_name: str = ""
+
+
+class LookbookRequest(BaseModel):
+    products: List[Dict[str, Any]]  # Each has "product" and optionally "techpack"
+    brand_name: str = ""
+
+
+@app.post("/generate-techpack-pdf")
+async def gen_techpack_pdf(request: TechPackPDFRequest):
+    """Generate a professional tech pack PDF.
+
+    The techpack data MUST be saved in the DB first (via the Tech Pack tab).
+    If no saved techpack is provided, the request fails.
+    This ensures the PDF always matches what the user sees in the UI.
+    """
+    try:
+        if request.techpack:
+            # Use the saved techpack from DB — single source of truth
+            techpack_data = request.techpack
+            print(f"[Foxit] Using saved techpack from DB for: {request.product.get('name', '?')}")
+        else:
+            # No saved techpack — fail with a clear message
+            raise HTTPException(
+                status_code=400,
+                detail="Tech pack has not been generated yet. Please go to the Tech Pack tab first to generate and save it before downloading the PDF.",
+            )
+
+        # Generate PDF via Foxit
+        pdf_bytes = generate_full_techpack_pdf(
+            product=request.product,
+            techpack=techpack_data,
+            brand_name=request.brand_name,
+        )
+
+        return {
+            "success": True,
+            "pdf_base64": base64.b64encode(pdf_bytes).decode("utf-8"),
+            "techpack": techpack_data,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Foxit] Tech pack PDF generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate-lookbook")
+async def gen_lookbook(request: LookbookRequest):
+    """Generate a collection lookbook by merging all product tech packs into one PDF."""
+    try:
+        items = []
+        for entry in request.products:
+            product = entry.get("product", entry)
+            techpack = entry.get("techpack")
+            if not techpack:
+                techpack = generate_techpack(product)
+            items.append({"product": product, "techpack": techpack})
+
+        pdf_bytes = foxit_generate_lookbook(
+            products_and_techpacks=items,
+            brand_name=request.brand_name,
+        )
+
+        return {
+            "success": True,
+            "pdf_base64": base64.b64encode(pdf_bytes).decode("utf-8"),
+            "product_count": len(items),
+        }
+    except Exception as e:
+        print(f"[Foxit] Lookbook generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -15,9 +15,9 @@ from shared.cache import cached
 
 
 GEMINI_FLASH_MODEL = os.environ.get("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
-GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_FLASH_IMAGE_MODEL", "gemini-2.5-flash-image")
+GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_FLASH_IMAGE_MODEL", "gemini-3-pro-image-preview")
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 
 
 def get_client() -> genai.Client:
@@ -79,17 +79,19 @@ BRAND STYLE:
 - Avoid: {negative_text}
 {trend_context}
 
-REQUIREMENTS:
-1. Professional e-commerce product photography style
-2. Clean, minimal background (white or light gray studio)
-3. Perfect studio lighting matching brand specs
-4. Product centered, full visibility, no cropping
-5. High resolution, sharp detail, commercial quality
-6. Show fabric texture and construction quality
-7. Accurate color representation
-8. No mannequin, no human model — product only (flat lay or ghost mannequin)
+CRITICAL COMPOSITION RULES (MUST FOLLOW):
+1. EXACTLY ONE single product in the image — never show multiple items, multiple angles, or side-by-side views
+2. Product perfectly centered in a SQUARE frame (1:1 aspect ratio)
+3. Product fills 70-80% of the frame with generous padding on all sides
+4. The ENTIRE product must be visible — no part cropped or cut off at edges
+5. Clean solid white or very light gray background — no gradients, patterns, or props
+6. Front-facing view only (for clothing: flat lay from directly above, or ghost mannequin straight-on)
+7. Professional e-commerce studio lighting — soft, even, no harsh shadows
+8. No mannequin, no human model, no hangers — product only
+9. High resolution, sharp detail, commercial quality
+10. Accurate color representation, show fabric texture
 
-OUTPUT: Provide ONLY the image generation prompt (200-300 words). Be specific about lighting, composition, materials, and details."""
+OUTPUT: Provide ONLY the image generation prompt (150-250 words). Start with the composition and framing, then describe the product details."""
 
     max_retries = 3
     for attempt in range(max_retries):
@@ -108,17 +110,23 @@ OUTPUT: Provide ONLY the image generation prompt (200-300 words). Be specific ab
             raise
 
     image_prompt = response.text.strip()
-    print(f"[Image Generator] Built prompt: {image_prompt[:120]}...")
+    print(f"[Image Generator] === RAW AI RESPONSE (Image Prompt) ===")
+    print(image_prompt)
+    print(f"[Image Generator] === END RAW RESPONSE ===")
 
     # ------------------------------------------------------------------ #
-    # Step 2 — Generate image with Gemini Flash Image
+    # Step 2 — Generate image (try primary model, fallback to Flash)
     # ------------------------------------------------------------------ #
-    print("[Image Generator] Generating product image...")
+    FALLBACK_IMAGE_MODEL = "gemini-2.5-flash-image"
+    image_retries = 5
+    img_response = None
 
-    for attempt in range(max_retries):
+    for attempt in range(image_retries):
+        model_to_use = GEMINI_IMAGE_MODEL if attempt < 3 else FALLBACK_IMAGE_MODEL
+        print(f"[Image Generator] Generating image (attempt {attempt + 1}/{image_retries}, model={model_to_use})...")
         try:
             img_response = client.models.generate_content(
-                model=GEMINI_IMAGE_MODEL,
+                model=model_to_use,
                 contents=image_prompt,
                 config=types.GenerateContentConfig(
                     response_modalities=["image"],
@@ -128,10 +136,14 @@ OUTPUT: Provide ONLY the image generation prompt (200-300 words). Be specific ab
             break
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** (attempt + 1))
-                    continue
+                wait = min(30, 5 * (attempt + 1))
+                print(f"[Image Generator] Rate limited, waiting {wait}s...")
+                time.sleep(wait)
+                continue
             raise
+
+    if img_response is None:
+        raise ValueError("Image generation failed after all retries")
 
     generated_image = None
     for part in img_response.parts:

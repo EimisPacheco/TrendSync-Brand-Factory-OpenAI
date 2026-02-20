@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, Shield, FileText, ChevronRight, Shirt, Footprints, Watch, CheckCircle, AlertTriangle, XCircle, Trash2 } from 'lucide-react';
+import { Eye, Shield, FileText, ChevronRight, Shirt, Footprints, Watch, CheckCircle, AlertTriangle, XCircle, Trash2, BookOpen, Loader2 } from 'lucide-react';
 import type { CollectionItem } from '../../types/database';
 import { getComplianceBadge } from '../../lib/brand-guardian';
 
@@ -9,9 +9,11 @@ interface ProductGalleryProps {
   onViewValidation: (item: CollectionItem) => void;
   onViewTechPack: (item: CollectionItem) => void;
   onDeleteItem?: (itemId: string) => void;
+  onExportLookbook?: () => void;
+  exportingLookbook?: boolean;
 }
 
-export function ProductGallery({ items, onSelectItem, onViewValidation, onViewTechPack, onDeleteItem }: ProductGalleryProps) {
+export function ProductGallery({ items, onSelectItem, onViewValidation, onViewTechPack, onDeleteItem, onExportLookbook, exportingLookbook }: ProductGalleryProps) {
   const [filter, setFilter] = useState<'all' | 'apparel' | 'footwear' | 'accessories'>('all');
   const [sortBy, setSortBy] = useState<'name' | 'compliance' | 'status'>('name');
 
@@ -92,6 +94,17 @@ export function ProductGallery({ items, onSelectItem, onViewValidation, onViewTe
             <option value="compliance">Sort by Compliance</option>
             <option value="status">Sort by Status</option>
           </select>
+
+          {onExportLookbook && (
+            <button
+              onClick={onExportLookbook}
+              disabled={exportingLookbook || items.length === 0}
+              className="btn-navy px-4 py-2 flex items-center gap-2 text-sm disabled:opacity-50"
+            >
+              {exportingLookbook ? <Loader2 size={16} className="animate-spin" /> : <BookOpen size={16} />}
+              {exportingLookbook ? 'Generating...' : 'Export Lookbook'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -115,12 +128,12 @@ export function ProductGallery({ items, onSelectItem, onViewValidation, onViewTe
                 key={item.id}
                 className="neumorphic-card overflow-hidden group hover:shadow-neumorphic-lg transition-all duration-300"
               >
-                <div className="aspect-square bg-gradient-to-br from-pastel-bg-light to-pastel-bg relative">
+                <div className="aspect-square bg-white relative">
                   {item.image_url ? (
                     <img
                       src={item.image_url}
                       alt={item.name}
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-contain p-2"
                     />
                   ) : (
                     <div className="absolute inset-0 flex items-center justify-center">

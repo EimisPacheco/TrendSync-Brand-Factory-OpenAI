@@ -12,7 +12,7 @@ from google.genai import types
 
 GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-3-pro-preview")
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 
 
 def get_client() -> genai.Client:
@@ -49,6 +49,92 @@ DEFAULT_TECHPACK = {
 }
 
 
+def _build_default_techpack(product: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a techpack from product data when Gemini is unavailable."""
+    # Extract materials
+    materials_list = product.get("materials", [])
+    material_str = product.get("material", "")
+    if materials_list and not material_str:
+        material_str = ", ".join(
+            m.get("name", str(m)) if isinstance(m, dict) else str(m)
+            for m in materials_list
+        )
+
+    # Infer fabric from material or category
+    category = product.get("category", "apparel")
+    subcategory = product.get("subcategory", "")
+    fabric_map = {
+        "dress": ("Lightweight Woven Fabric", "100% Polyester", "120 GSM"),
+        "jacket": ("Mid-Weight Twill", "65% Cotton, 35% Polyester", "220 GSM"),
+        "shirt": ("Cotton Poplin", "100% Cotton", "130 GSM"),
+        "pants": ("Stretch Denim", "98% Cotton, 2% Elastane", "280 GSM"),
+        "skirt": ("Crepe Fabric", "100% Polyester", "150 GSM"),
+        "coat": ("Heavy Wool Blend", "70% Wool, 30% Polyester", "350 GSM"),
+        "sweater": ("Knit Fabric", "80% Cotton, 20% Nylon", "200 GSM"),
+        "footwear": ("Premium Leather", "Genuine Leather Upper", "1.2mm thickness"),
+        "accessories": ("Mixed Materials", "Various", "Varies"),
+    }
+    default_fabric = ("Premium Fabric", "Blended fibers", "180 GSM")
+    fabric_key = subcategory.lower() if subcategory else category.lower()
+    fabric_info = fabric_map.get(fabric_key, fabric_map.get(category.lower(), default_fabric))
+
+    primary_fabric = material_str if material_str else fabric_info[0]
+    composition = fabric_info[1]
+    weight = fabric_info[2]
+
+    # Colors
+    colors = product.get("colors", product.get("color_story", ""))
+
+    # Design details
+    details = product.get("details", [])
+    details_str = ", ".join(details) if isinstance(details, list) else str(details)
+
+    return {
+        "fabric_details": {
+            "primary_fabric": primary_fabric,
+            "composition": composition,
+            "weight": weight,
+            "care_instructions": "Machine wash cold, gentle cycle. Hang dry. Do not bleach. Iron on low heat.",
+        },
+        "measurements": {
+            "sizes": ["XS", "S", "M", "L", "XL"],
+            "key_measurements": {
+                "chest": {"XS": "84", "S": "88", "M": "92", "L": "96", "XL": "100"},
+                "waist": {"XS": "64", "S": "68", "M": "72", "L": "76", "XL": "80"},
+                "length": {"XS": "62", "S": "64", "M": "66", "L": "68", "XL": "70"},
+            },
+        },
+        "graphics_and_prints": {
+            "type": "As per design specification",
+            "details": details_str or f"Per design brief — {product.get('inspiration', 'contemporary aesthetic')}",
+        },
+        "adornments": {
+            "type": details_str if details_str else "Minimal hardware",
+            "details": f"Silhouette: {product.get('silhouette', 'Classic')}. Fit: {product.get('fit', 'Regular')}.",
+        },
+        "construction": {
+            "seam_type": "French seam / Flatlock",
+            "stitch_count": "12 stitches per inch",
+            "special_instructions": f"Maintain {product.get('fit', 'regular')} fit across all sizes",
+        },
+        "quality_control": {
+            "inspection_points": [
+                "Seam integrity and strength",
+                "Color consistency across panels",
+                "Size accuracy within 1cm tolerance",
+                "Print/graphic placement accuracy",
+                "Hardware functionality",
+            ],
+            "tolerance": "±1cm for all key measurements; ±0.5 for color delta E",
+        },
+        "packaging": {
+            "folding_method": "Tissue-wrapped, branded fold",
+            "labels": ["Woven main label", "Printed care label", "Size label", "Content label"],
+            "hangtags": "Brand hangtag with product info and price",
+        },
+    }
+
+
 def generate_techpack(product: Dict[str, Any]) -> Dict[str, Any]:
     """
     Generate a full tech pack for a fashion product using Gemini 3 Pro.
@@ -56,15 +142,34 @@ def generate_techpack(product: Dict[str, Any]) -> Dict[str, Any]:
     """
     client = get_client()
 
+    # Build rich material info from product data
+    materials_list = product.get("materials", [])
+    materials_str = product.get("material", "")
+    if materials_list and not materials_str:
+        materials_str = ", ".join(
+            m.get("name", str(m)) if isinstance(m, dict) else str(m)
+            for m in materials_list
+        )
+
     prompt = f"""You are a fashion technical designer. Generate a detailed tech pack for this product:
 
 PRODUCT:
 - Name: {product.get('name', 'Unknown')}
 - Category: {product.get('category', 'Unknown')}
+- Subcategory: {product.get('subcategory', '')}
 - Description: {product.get('description', '')}
-- Material: {product.get('material', '')}
+- Design Story: {product.get('design_story', '')}
+- Material: {materials_str}
 - Color Story: {product.get('color_story', '')}
-- Target Price: {product.get('target_price', '')}
+- Colors: {product.get('colors', '')}
+- Silhouette: {product.get('silhouette', '')}
+- Fit: {product.get('fit', '')}
+- Design Details: {', '.join(product.get('details', [])) if isinstance(product.get('details'), list) else product.get('details', '')}
+- Inspiration: {product.get('inspiration', '')}
+- Target Price: {product.get('target_price', product.get('price_tier', ''))}
+- Target Persona: {product.get('target_persona', '')}
+
+IMPORTANT: Use the material, color, and design details provided above. Do NOT use placeholder values like "To be determined" or "N/A" — infer reasonable values from the product description and category if specific data is missing.
 
 Generate a comprehensive tech pack JSON with these sections:
 
@@ -127,5 +232,5 @@ Be realistic and detailed. Base measurements on the category and target demograp
         return techpack
 
     except Exception as e:
-        print(f"[TechPack] Generation failed: {e}, using defaults")
-        return DEFAULT_TECHPACK
+        print(f"[TechPack] Generation failed: {e}, using product-aware defaults")
+        return _build_default_techpack(product)

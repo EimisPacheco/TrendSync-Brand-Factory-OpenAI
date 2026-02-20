@@ -94,32 +94,18 @@ class GenerateAdRequest(BaseModel):
 
 
 class GenerateAdResponse(BaseModel):
-    stitched_video_url: str
-    scene_video_urls: List[str]
+    stitched_video_url: Optional[str] = None
+    stitched_video_base64: Optional[str] = None
+    scene_video_urls: List[str] = []
 
 
 # --------------------------------------------------------------------------
 # Utilities
 # --------------------------------------------------------------------------
 
-def get_signed_url(bucket_name: str, blob_name: str, expires_seconds: int = 3600) -> str:
-    from google.oauth2 import service_account
-    from datetime import timedelta
-
-    creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if creds_path and os.path.exists(creds_path):
-        credentials = service_account.Credentials.from_service_account_file(creds_path)
-        client = storage.Client(project=PROJECT_ID, credentials=credentials)
-    else:
-        client = storage.Client(project=PROJECT_ID)
-
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_name)
-    return blob.generate_signed_url(
-        version="v4",
-        expiration=timedelta(seconds=expires_seconds),
-        method="GET",
-    )
+def get_public_url(bucket_name: str, blob_name: str) -> str:
+    """Return a public HTTPS URL for the blob (bucket must allow public reads)."""
+    return f"https://storage.googleapis.com/{bucket_name}/{blob_name}"
 
 
 def gcs_object_name_from_uri(gcs_uri: str) -> str:
@@ -148,6 +134,9 @@ def upload_to_gcs(local_path: str, object_name: str) -> str:
     return f"gs://{BUCKET_NAME}/{object_name}"
 
 
+FFMPEG_PATH = os.environ.get("FFMPEG_PATH", "/opt/homebrew/bin/ffmpeg")
+
+
 def stitch_videos(video_paths: List[str], output_path: str) -> None:
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         concat_file = f.name
@@ -155,7 +144,7 @@ def stitch_videos(video_paths: List[str], output_path: str) -> None:
             f.write(f"file '{path}'\n")
 
     cmd = [
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        FFMPEG_PATH, "-y", "-f", "concat", "-safe", "0",
         "-i", concat_file, "-c", "copy", output_path,
     ]
     subprocess.run(cmd, check=True)
@@ -213,7 +202,6 @@ async def generate_ad(req: GenerateAdRequest) -> Dict[str, Any]:
             "duration_seconds": req.duration_seconds,
             "generate_audio": req.generate_audio,
             "negative_prompt": DEFAULT_NEGATIVE_PROMPT,
-            "output_gcs_uri": f"gs://{BUCKET_NAME}/ads/{ad_id}/scenes/",
         }
 
         if asset_reference_config:
@@ -226,34 +214,81 @@ async def generate_ad(req: GenerateAdRequest) -> Dict[str, Any]:
         )
 
         # Poll
-        while not operation.done:
+        max_polls = 60  # 8 min max per scene
+        for poll_count in range(max_polls):
             time.sleep(8)
             operation = client.operations.get(operation)
+            if operation.done:
+                break
+            logger.info(f"[VEO] Scene {idx + 1} still generating... (poll {poll_count + 1})")
+
+        if not operation.done:
+            logger.error(f"[VEO] Scene {idx + 1} timed out after {max_polls * 8}s")
+            raise HTTPException(status_code=500, detail=f"Scene {idx + 1}: Veo timed out")
+
+        # Log full operation for debugging
+        logger.info(f"[VEO] Scene {idx + 1} operation done. Has result: {operation.result is not None}")
+        if operation.result:
+            logger.info(f"[VEO] Scene {idx + 1} generated_videos count: {len(operation.result.generated_videos) if operation.result.generated_videos else 0}")
+        if hasattr(operation, 'error') and operation.error:
+            logger.error(f"[VEO] Scene {idx + 1} operation error: {operation.error}")
+        if hasattr(operation, 'metadata') and operation.metadata:
+            logger.info(f"[VEO] Scene {idx + 1} metadata: {operation.metadata}")
 
         if not operation.result or not operation.result.generated_videos:
-            raise HTTPException(status_code=500, detail=f"Scene {idx + 1}: Veo returned no video")
+            # Try to extract useful error info
+            error_detail = "Veo returned no video"
+            if hasattr(operation, 'error') and operation.error:
+                error_detail = f"Veo error: {operation.error}"
+            elif operation.result and hasattr(operation.result, 'rai_media_filtered_count'):
+                if operation.result.rai_media_filtered_count and operation.result.rai_media_filtered_count > 0:
+                    error_detail = "Video was blocked by Veo safety filter (RAI). Try a different prompt."
+            logger.error(f"[VEO] Scene {idx + 1}: {error_detail}. Full operation: {operation}")
+            raise HTTPException(status_code=500, detail=f"Scene {idx + 1}: {error_detail}")
 
-        scene_uri = operation.result.generated_videos[0].video.uri
-        logger.info(f"[VEO] Scene {idx + 1} done: {scene_uri}")
-        scene_gcs_uris.append(scene_uri)
+        video = operation.result.generated_videos[0].video
+        logger.info(f"[VEO] Scene {idx + 1} done!")
 
-        # Download for stitching
+        # Download video — try GCS URI first, then inline data
         local_path = tempfile.mktemp(suffix=f"_scene_{idx}.mp4")
-        download_gcs_file(scene_uri, local_path)
+        if video.uri:
+            logger.info(f"[VEO] Downloading scene {idx + 1} from: {video.uri}")
+            try:
+                download_gcs_file(video.uri, local_path)
+            except Exception as e:
+                logger.error(f"[VEO] GCS download failed: {e}")
+                if hasattr(video, 'video_bytes') and video.video_bytes:
+                    with open(local_path, "wb") as f:
+                        f.write(video.video_bytes)
+                else:
+                    raise HTTPException(status_code=500, detail=f"Scene {idx + 1}: Cannot download video")
+        elif hasattr(video, 'video_bytes') and video.video_bytes:
+            with open(local_path, "wb") as f:
+                f.write(video.video_bytes)
+        else:
+            raise HTTPException(status_code=500, detail=f"Scene {idx + 1}: No video URI or bytes")
+
         local_video_files.append(local_path)
 
-    # Stitch
-    stitched_path = tempfile.mktemp(suffix="_ad.mp4")
-    stitch_videos(local_video_files, stitched_path)
+    # Stitch if multiple scenes, otherwise use single scene
+    if len(local_video_files) > 1:
+        stitched_path = tempfile.mktemp(suffix="_ad.mp4")
+        stitch_videos(local_video_files, stitched_path)
+    else:
+        stitched_path = local_video_files[0]
 
-    stitched_obj = f"ads/{ad_id}/ad.mp4"
-    upload_to_gcs(stitched_path, stitched_obj)
-    stitched_url = get_signed_url(BUCKET_NAME, stitched_obj)
-
-    scene_urls = [
-        get_signed_url(BUCKET_NAME, gcs_object_name_from_uri(uri))
-        for uri in scene_gcs_uris
-    ]
+    # Try GCS upload, fallback to base64
+    stitched_url = None
+    stitched_b64 = None
+    try:
+        stitched_obj = f"ads/{ad_id}/ad.mp4"
+        upload_to_gcs(stitched_path, stitched_obj)
+        stitched_url = get_public_url(BUCKET_NAME, stitched_obj)
+        logger.info(f"[VEO] Uploaded stitched video to GCS")
+    except Exception as e:
+        logger.warning(f"[VEO] GCS upload failed ({e}), returning base64")
+        with open(stitched_path, "rb") as f:
+            stitched_b64 = base64.b64encode(f.read()).decode("utf-8")
 
     # Cleanup
     if temp_asset_path and os.path.exists(temp_asset_path):
@@ -261,10 +296,14 @@ async def generate_ad(req: GenerateAdRequest) -> Dict[str, Any]:
     for p in local_video_files:
         if os.path.exists(p):
             os.remove(p)
-    if os.path.exists(stitched_path):
+    if len(local_video_files) > 1 and os.path.exists(stitched_path):
         os.remove(stitched_path)
 
-    return {"stitched_video_url": stitched_url, "scene_video_urls": scene_urls}
+    return {
+        "stitched_video_url": stitched_url,
+        "stitched_video_base64": stitched_b64,
+        "scene_video_urls": [],
+    }
 
 
 @app.get("/health")

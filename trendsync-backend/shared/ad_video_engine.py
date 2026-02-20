@@ -18,8 +18,9 @@ from google.genai import types
 
 
 GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-3-pro-preview")
+GEMINI_FLASH_MODEL = os.environ.get("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 
 VIDEO_GEN_ENDPOINT = os.environ.get(
     "VIDEO_GEN_SERVICE_URL", "http://localhost:8001"
@@ -109,10 +110,10 @@ REQUIRED JSON SCHEMA:
       "scene_number": 1,
       "scene_type": "hook|hero|detail|lifestyle|cta",
       "prompt": "Detailed Veo video generation prompt (150-250 words). Describe exact visuals, camera movement, lighting, mood. Product must match the reference image exactly.",
-      "voiceover": "Marketing narration for this scene (1-2 sentences, speakable in 6-8 seconds)",
+      "voiceover": "Marketing narration for this scene (1 sentence, speakable in 5-6 seconds)",
       "camera_movement": "slow zoom in|orbit|tracking|static|pull back",
       "mood": "dramatic|elegant|energetic|warm|bold|minimal",
-      "duration_seconds": 8
+      "duration_seconds": 6
     }}
   ]
 }}
@@ -137,6 +138,10 @@ CRITICAL VEO PROMPT RULES:
             response_mime_type="application/json",
         ),
     )
+
+    print(f"[AdVideoEngine] === RAW AI RESPONSE (Storyboard Plan) ===")
+    print(response.text[:5000])
+    print(f"[AdVideoEngine] === END RAW RESPONSE ===")
 
     storyboard = json.loads(response.text)
     if isinstance(storyboard, list) and len(storyboard) > 0:
@@ -195,6 +200,10 @@ Return the complete scene JSON with enhanced prompt."""
             response_mime_type="application/json",
         ),
     )
+
+    print(f"[AdVideoEngine] === RAW AI RESPONSE (Scene Expand: {scene.get('scene_type', '')}) ===")
+    print(response.text[:3000])
+    print(f"[AdVideoEngine] === END RAW RESPONSE ===")
 
     expanded = json.loads(response.text)
     if isinstance(expanded, list) and len(expanded) > 0:
@@ -262,7 +271,7 @@ def convert_to_veo_request(
 
     request = {
         "scenes": veo_scenes,
-        "duration_seconds": 8,
+        "duration_seconds": 6,
         "aspect_ratio": "16:9",
         "generate_audio": True,
     }
@@ -276,6 +285,140 @@ def convert_to_veo_request(
 # --------------------------------------------------------------------------
 # Public pipeline
 # --------------------------------------------------------------------------
+
+def _build_fallback_video_prompt(product: Dict[str, Any], brand_style: Dict[str, Any]) -> str:
+    """Build a video prompt directly from product data (no LLM call needed)."""
+    name = product.get("name", "fashion product")
+    category = product.get("category", "garment")
+    color_story = product.get("color_story", "")
+    material = product.get("material", "premium fabric")
+    color_palette = ", ".join(
+        f"{c['name']}" for c in brand_style.get("colorPalette", [])
+    )
+
+    return (
+        f"High-quality 3D product visualization of a {name} ({category}). "
+        f"The product is made of {material} with colors: {color_story or color_palette or 'neutral tones'}. "
+        f"Professional commercial video quality. Cinematic studio lighting with dramatic key light "
+        f"and subtle rim light highlighting the fabric texture and material quality. "
+        f"Slow, elegant 360-degree orbit camera movement around the product placed on a minimal "
+        f"pedestal against a dark gradient background. "
+        f"Soft bokeh in the background, gentle fabric motion from a light breeze. "
+        f"Premium, aspirational feel — luxury fashion brand advertisement. "
+        f"Clean, polished aesthetic with accurate color reproduction. "
+        f"The product fills the frame and is the sole focus throughout. "
+        f"No text, no logos, no watermarks, no human models. "
+        f"Smooth camera movement, professional color grading. "
+        f"The product must match the provided reference image EXACTLY — "
+        f"same colors, same shape, same proportions, same design details."
+    )
+
+
+def generate_single_product_video(
+    product: Dict[str, Any],
+    brand_style: Dict[str, Any],
+    product_image_base64: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Generate a single-scene 10-second Veo video for one product.
+    The product image is passed as an asset reference so the video
+    matches the generated product image exactly.
+    """
+    color_palette = ", ".join(
+        f"{c['name']} ({c['hex']})" for c in brand_style.get("colorPalette", [])
+    )
+
+    # Try Gemini for a richer prompt; fall back to template if rate-limited
+    # Attempt 1: Gemini Pro, Attempt 2: Gemini Flash, Attempt 3: fallback template
+    video_prompt = None
+    models_to_try = [GEMINI_PRO_MODEL, GEMINI_FLASH_MODEL]
+    for attempt, model_id in enumerate(models_to_try):
+        try:
+            client = get_client()
+            prompt = f"""Create a single cinematic advertisement video prompt for this fashion product.
+
+PRODUCT:
+- Name: {product.get('name', '')}
+- Category: {product.get('category', '')}
+- Description: {product.get('description', '')}
+- Color Story: {product.get('color_story', '')}
+- Material: {product.get('material', '')}
+
+BRAND COLORS: {color_palette}
+
+CRITICAL — The video MUST show the EXACT same product as the provided reference image.
+Every detail must match: same colors, same shape, same fabric texture, same design.
+The viewer must instantly recognize the product from the still image in the video.
+
+Create a prompt for a 10-second luxury advertisement video:
+1. The product from the reference image appears IDENTICALLY in the video — same colors, proportions, materials, details
+2. Slow cinematic camera movement: orbit around the product or gentle dolly/zoom
+3. Dramatic studio lighting — key light + rim light highlighting fabric texture
+4. Clean, dark or neutral gradient background — premium, aspirational feel
+5. Subtle atmospheric elements: soft bokeh, light rays, gentle fabric motion
+6. Professional commercial quality — high-end fashion brand ad
+7. No text, no logos, no watermarks, no human model, ONLY this one product
+8. The product must fill the frame and be the sole focus throughout
+
+Return ONLY the video prompt (200-300 words)."""
+
+            print(f"[AdVideoEngine] Trying model: {model_id}")
+            response = client.models.generate_content(
+                model=model_id,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level=types.ThinkingLevel.LOW,
+                        include_thoughts=False,
+                    ),
+                ),
+            )
+            video_prompt = response.text.strip()
+            print(f"[AdVideoEngine] Prompt OK ({model_id}) for '{product.get('name', '')}': {video_prompt[:200]}...")
+            break
+
+        except Exception as e:
+            print(f"[AdVideoEngine] {model_id} failed: {e}")
+            if attempt < len(models_to_try) - 1:
+                wait = 5
+                print(f"[AdVideoEngine] Retrying with next model in {wait}s...")
+                time.sleep(wait)
+
+    if not video_prompt:
+        print("[AdVideoEngine] All Gemini attempts failed — using fallback prompt")
+        video_prompt = _build_fallback_video_prompt(product, brand_style)
+
+    # Send to Veo service — single scene, 10 seconds
+    print(f"[AdVideoEngine] Sending to Veo service at {VIDEO_GEN_ENDPOINT}...")
+    request_payload = {
+        "scenes": [{"prompt": video_prompt, "dialogue": None, "interaction": False}],
+        "duration_seconds": 8,
+        "aspect_ratio": "16:9",
+        "generate_audio": True,
+    }
+
+    # Pass the product image as an asset reference so Veo generates
+    # a video that looks IDENTICAL to the still image
+    if product_image_base64:
+        request_payload["style_reference_image_base64"] = product_image_base64
+
+    response = requests.post(
+        VIDEO_GEN_ENDPOINT,
+        json=request_payload,
+        timeout=600,
+    )
+
+    if response.status_code != 200:
+        raise ValueError(f"Veo video generation failed: {response.status_code}: {response.text[:500]}")
+
+    veo_response = response.json()
+
+    return {
+        "video_url": veo_response.get("stitched_video_url"),
+        "video_base64": veo_response.get("stitched_video_base64"),
+        "video_prompt": video_prompt,
+    }
+
 
 def generate_ad_storyboard(
     product: Dict[str, Any],
@@ -346,11 +489,13 @@ def generate_complete_ad_video(
 
     veo_response = response.json()
 
-    # Update storyboard with video URLs
+    # Update storyboard with video URLs (scenes may be empty)
+    scene_urls = veo_response.get("scene_video_urls", [])
     for i, scene in enumerate(storyboard["scenes"]):
-        scene["video_url"] = veo_response["scene_video_urls"][i]
+        scene["video_url"] = scene_urls[i] if i < len(scene_urls) else None
 
-    storyboard["stitched_video_url"] = veo_response["stitched_video_url"]
+    storyboard["stitched_video_url"] = veo_response.get("stitched_video_url")
+    storyboard["stitched_video_base64"] = veo_response.get("stitched_video_base64")
 
     print(f"[Ad Pipeline] Complete! Ad ready: {storyboard['ad_id']}")
     return storyboard

@@ -257,6 +257,33 @@ export async function getAdVideo(adId: string) {
   return apiFetch(`/ad-videos/${adId}`);
 }
 
+// ---------- Single Product Video (on-demand) ----------
+
+export async function startProductVideo(params: {
+  product: Record<string, unknown>;
+  brand_id: string;
+  image_base64?: string;
+}) {
+  return apiFetch<{ success: boolean; video_id: string; status: string }>(
+    "/generate-product-video",
+    { method: "POST", body: JSON.stringify(params) }
+  );
+}
+
+export interface ProductVideoStatus {
+  video_id: string;
+  status: "pending" | "generating" | "complete" | "failed";
+  message?: string;
+  error?: string;
+  video_base64?: string;
+  video_url?: string;
+  video_prompt?: string;
+}
+
+export async function getProductVideoStatus(videoId: string) {
+  return apiFetch<ProductVideoStatus>(`/product-videos/${videoId}`);
+}
+
 // ---------- Full Pipeline (ADK Orchestrator) ----------
 
 export interface PipelineConfig {
@@ -272,6 +299,45 @@ export interface PipelineConfig {
   ad_style?: string;
 }
 
+export interface PipelineProduct {
+  name: string;
+  category: string;
+  description: string;
+  color_story: string;
+  material: string;
+  target_price: string;
+  image_url: string | null;
+  image_base64?: string | null;
+  product_id: string;
+  compliance_score?: number;
+  video_base64?: string | null;
+  video_url?: string | null;
+}
+
+export interface PipelineResult {
+  collection_id: string;
+  collection_name: string;
+  collection_description: string;
+  season: string;
+  region: string;
+  demographic: string;
+  product_count: number;
+  products: PipelineProduct[];
+  trend_insights: {
+    summary: string;
+    colors: { name: string; hex?: string }[];
+    materials: { name: string }[];
+    silhouettes: { name: string }[];
+  };
+  ad_video: {
+    ad_id: string;
+    title: string;
+    stitched_video_url?: string | null;
+    stitched_video_base64?: string | null;
+    [key: string]: unknown;
+  } | null;
+}
+
 export interface PipelineStatus {
   pipeline_id: string;
   status: "running" | "complete" | "failed";
@@ -279,14 +345,9 @@ export interface PipelineStatus {
   message: string;
   completed_steps: string[];
   step_data: Record<string, unknown>;
+  step_results: Record<string, Record<string, unknown>>;
   error: string | null;
-  result?: {
-    collection_id: string;
-    collection_name: string;
-    product_count: number;
-    products: { name: string; category: string; image_url: string | null }[];
-    ad_video: Record<string, unknown> | null;
-  };
+  result?: PipelineResult;
 }
 
 export async function startPipeline(config: PipelineConfig) {
@@ -307,6 +368,37 @@ export function getVoiceCompanionWsUrl(sessionId: string): string {
   // instead of proxying through main backend (port 8000) which returns 403
   const voiceBase = import.meta.env.VITE_VOICE_COMPANION_URL || "ws://localhost:8002";
   return `${voiceBase}/ws/voice-companion/${sessionId}`;
+}
+
+// ---------- Foxit PDF Generation ----------
+
+export async function generateTechPackPDF(params: {
+  product: Record<string, unknown>;
+  techpack?: Record<string, unknown>;
+  brand_name?: string;
+}) {
+  return apiFetch<{
+    success: boolean;
+    pdf_base64: string;
+    techpack: Record<string, unknown>;
+  }>("/generate-techpack-pdf", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function generateLookbook(params: {
+  products: { product: Record<string, unknown>; techpack?: Record<string, unknown> }[];
+  brand_name?: string;
+}) {
+  return apiFetch<{
+    success: boolean;
+    pdf_base64: string;
+    product_count: number;
+  }>("/generate-lookbook", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
 }
 
 /** Start payload for voice companion WebSocket — include productImageBase64 for vision analysis */
