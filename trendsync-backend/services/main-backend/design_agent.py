@@ -35,7 +35,7 @@ PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-
 DESIGN_MODEL = os.environ.get("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
 
 # ADK Agent reads GOOGLE_CLOUD_LOCATION for its internal Vertex AI client.
-os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "us-central1")
+os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
 
 
 # ==========================================================================

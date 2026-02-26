@@ -223,17 +223,7 @@ The TodoWrite tool hasn't been used recently. If you're working on tasks that wo
             <Star size={18} />
             Celebrity-Inspired
           </button>
-          <button
-            onClick={() => setActiveTab('pipeline')}
-            className={`flex-1 py-3 px-6 rounded-lg font-semibold transition-all flex items-center justify-center gap-2 ${
-              activeTab === 'pipeline'
-                ? 'neumorphic-pressed text-pastel-accent'
-                : 'text-pastel-text hover:neumorphic-sm'
-            }`}
-          >
-            <Rocket size={18} />
-            Full Pipeline
-          </button>
+          {/* Full Pipeline tab hidden — redundant with Regional & Celebrity tabs */}
         </div>
       </div>
 

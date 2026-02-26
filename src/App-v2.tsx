@@ -28,6 +28,8 @@ import { DEFAULT_BRAND_STYLE } from './lib/defaults';
 import { fetchCelebrities as apiFetchCelebrities, generateLookbook } from './lib/api-client';
 import type { PipelineResult } from './lib/api-client';
 import { VoiceCompanion } from './components/voice/VoiceCompanion';
+import { uploadProductImage, isSupabaseStorageUrl, needsMigration } from './lib/image-storage';
+import { supabase as supabaseClient } from './lib/supabase';
 
 function AppContent() {
   const { user, loading: authLoading } = useAuth();
@@ -331,6 +333,20 @@ function AppContent() {
         };
       });
 
+      // 2b. Upload images to Supabase Storage in parallel
+      await Promise.all(
+        itemsToCreate.map(async (item) => {
+          if (item.image_url && !isSupabaseStorageUrl(item.image_url)) {
+            const path = `collections/${collection.id}/${item.sku}`;
+            const publicUrl = await uploadProductImage(item.image_url, path);
+            if (publicUrl) {
+              item.image_url = publicUrl;
+            }
+            // Falls back to original data URL if upload fails
+          }
+        })
+      );
+
       const savedItems = await collectionItemStorage.createMany(itemsToCreate);
 
       // 3. Update React state to show gallery
@@ -566,5 +582,57 @@ function AppContent() {
 function App() {
   return <AppContent />;
 }
+
+// ── Migration utility (run via browser console: window.__migrateImages()) ──
+async function migrateExistingImages() {
+  console.log('[migrate] Starting image migration to Supabase Storage...');
+  const { data: items, error } = await supabaseClient
+    .from('collection_items')
+    .select('id, sku, collection_id, image_url')
+    .not('image_url', 'is', null);
+
+  if (error || !items) {
+    console.error('[migrate] Failed to fetch items:', error);
+    return;
+  }
+
+  let migrated = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const item of items) {
+    if (!item.image_url || isSupabaseStorageUrl(item.image_url)) {
+      skipped++;
+      continue;
+    }
+    if (!needsMigration(item.image_url)) {
+      skipped++;
+      continue;
+    }
+
+    const path = `collections/${item.collection_id}/${item.sku}`;
+    const publicUrl = await uploadProductImage(item.image_url, path);
+    if (publicUrl) {
+      const { error: updateErr } = await supabaseClient
+        .from('collection_items')
+        .update({ image_url: publicUrl })
+        .eq('id', item.id);
+      if (updateErr) {
+        console.warn(`[migrate] DB update failed for ${item.sku}:`, updateErr.message);
+        failed++;
+      } else {
+        console.log(`[migrate] ✓ ${item.sku} → ${publicUrl}`);
+        migrated++;
+      }
+    } else {
+      console.warn(`[migrate] ✗ ${item.sku} — upload failed (likely 403 or broken URL)`);
+      failed++;
+    }
+  }
+
+  console.log(`[migrate] Done! Migrated: ${migrated}, Skipped: ${skipped}, Failed: ${failed}`);
+}
+
+(window as any).__migrateImages = migrateExistingImages;
 
 export default App;

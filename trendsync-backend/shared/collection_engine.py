@@ -16,7 +16,7 @@ from google.genai import types
 
 GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-3-pro-preview")
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
 
 MAX_VALIDATION_RETRIES = 3
 

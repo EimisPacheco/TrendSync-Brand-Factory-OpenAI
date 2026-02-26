@@ -46,13 +46,14 @@ logger = logging.getLogger(__name__)
 
 VOICE_MODEL = os.environ.get("VOICE_MODEL", "gemini-live-2.5-flash-native-audio")
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
 MAIN_BACKEND_URL = os.environ.get("MAIN_BACKEND_URL", "http://localhost:8000")
 
-# Voice model needs us-central1; design tools run locally via shared modules
-if LOCATION == "global":
-    LOCATION = "us-central1"
-    os.environ["GOOGLE_CLOUD_LOCATION"] = "us-central1"
+# Voice model needs us-central1 specifically; shared modules use global (from env).
+# Shared modules (image_generator, trend_engine, etc.) already captured their LOCATION
+# at import time above, so overriding os.environ HERE is safe — it only affects the
+# ADK Runner which reads it when creating its internal Vertex AI client.
+VOICE_LOCATION = "us-central1"
+os.environ["GOOGLE_CLOUD_LOCATION"] = VOICE_LOCATION
 
 # Module-level state for product context (voice tools are plain functions, no ToolContext)
 _voice_sessions: dict[str, dict] = {}
@@ -87,7 +88,7 @@ def _get_http_client() -> httpx.AsyncClient:
         _http_client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
     return _http_client
 
-logger.info(f"[Voice Companion] Starting: location={LOCATION}, model={VOICE_MODEL}")
+logger.info(f"[Voice Companion] Starting: location={VOICE_LOCATION}, model={VOICE_MODEL}")
 logger.info(f"[Voice Companion] Main backend at: {MAIN_BACKEND_URL}")
 
 app = FastAPI(title="TrendSync Voice Design Companion")
@@ -884,7 +885,7 @@ async def health():
         "status": "healthy",
         "service": "voice-companion",
         "model": VOICE_MODEL,
-        "location": LOCATION,
+        "location": VOICE_LOCATION,
         "tools": [
             "analyze_product_image",
             "edit_product_image",

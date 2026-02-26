@@ -4,6 +4,7 @@ import type { CollectionItem } from '../../types/database';
 import { collectionItemStorage } from '../../services/db-storage';
 import { toast } from 'sonner';
 import { designCompanionChat, saveDesignAnalysis } from '../../lib/api-client';
+import { uploadProductImage, isSupabaseStorageUrl } from '../../lib/image-storage';
 
 interface Message {
   id: string;
@@ -54,6 +55,11 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
   const [sessionId] = useState(() => crypto.randomUUID());
   // Local image URL — survives parent DB-polling so edits don't revert
   const [localImageUrl, setLocalImageUrl] = useState<string>(item.image_url || '');
+  // Debug: track image edit history for before/after comparison
+  const [imageVersion, setImageVersion] = useState(0);
+  const [previousImageUrl, setPreviousImageUrl] = useState<string>('');
+  const [showBefore, setShowBefore] = useState(false);
+  const [imageJustUpdated, setImageJustUpdated] = useState(false);
 
   // Sync local image when a different product is loaded
   useEffect(() => {
@@ -147,9 +153,20 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
         brand_id: brandId,
       });
 
-      // 2. Build the full update payload
+      // 2. Upload image to Supabase Storage if needed
+      let persistedImageUrl = currentImageUrl;
+      if (currentImageUrl && !isSupabaseStorageUrl(currentImageUrl)) {
+        const storagePath = `designs/${item.collection_id}/${item.id}-v${Date.now()}`;
+        const publicUrl = await uploadProductImage(currentImageUrl, storagePath);
+        if (publicUrl) {
+          persistedImageUrl = publicUrl;
+        }
+        // Falls back to data URL if upload fails
+      }
+
+      // 3. Build the full update payload
       const updates: Partial<CollectionItem> = {
-        image_url: currentImageUrl,
+        image_url: persistedImageUrl,
         updated_at: new Date().toISOString(),
       };
 
@@ -163,7 +180,7 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
         updates.brand_compliance_score = analysis.brand_compliance_score;
       }
 
-      // 3. Persist everything to DB and notify parent
+      // 4. Persist everything to DB and notify parent
       await collectionItemStorage.update(item.id, updates);
       onUpdateItem(updates);
       setHasUnsavedChanges(false);
@@ -191,9 +208,22 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
 
     // If agent edited/generated an image, update the preview (don't auto-save)
     if (result.action?.image_base64) {
-      const imageDataUrl = `data:image/png;base64,${result.action.image_base64}`;
+      const b64 = result.action.image_base64;
+      console.log(`[DesignAdjustments] Image received: ${b64.length} chars, first 40: ${b64.slice(0, 40)}`);
+      const imageDataUrl = `data:image/png;base64,${b64}`;
+      const prevUrl = localImageUrl;
+      console.log(`[DesignAdjustments] Previous URL type: ${prevUrl.startsWith('data:') ? 'data URL' : 'HTTP URL'}, length: ${prevUrl.length}`);
+      // Store previous image for before/after comparison
+      if (prevUrl) {
+        setPreviousImageUrl(prevUrl);
+      }
       // Update local state first — this is immune to parent DB-polling
       setLocalImageUrl(imageDataUrl);
+      setImageVersion(v => v + 1);
+      // Flash the "updated" indicator
+      setImageJustUpdated(true);
+      setTimeout(() => setImageJustUpdated(false), 3000);
+      console.log(`[DesignAdjustments] localImageUrl updated. Same as before: ${imageDataUrl === prevUrl}, version: ${imageVersion + 1}`);
       const updates: Partial<CollectionItem> = { image_url: imageDataUrl };
       if (result.action.compliance_score !== undefined) {
         updates.brand_compliance_score = result.action.compliance_score;
@@ -201,6 +231,8 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
       onUpdateItem(updates);
       setHasUnsavedChanges(true);
       toast.success('Design updated — click Save to keep it!');
+    } else {
+      console.log(`[DesignAdjustments] No image in response. action:`, result.action);
     }
 
     // If agent called save_design, persist to database
@@ -465,12 +497,41 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
         {/* Right Column - Product Preview */}
         <div className="w-1/3 min-w-[300px]">
           <div className="neumorphic-card p-4 h-full">
-            <h4 className="text-sm font-bold text-pastel-navy mb-3">Product Preview</h4>
-            <div className="aspect-square neumorphic-inset rounded-xl overflow-hidden mb-3">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-bold text-pastel-navy">Product Preview</h4>
+              {imageVersion > 0 && (
+                <div className="flex items-center gap-2">
+                  {previousImageUrl && (
+                    <button
+                      onClick={() => setShowBefore(!showBefore)}
+                      className={`text-[10px] px-2 py-0.5 rounded-full transition-all ${
+                        showBefore
+                          ? 'bg-amber-100 text-amber-700 font-bold'
+                          : 'bg-pastel-bg-light text-pastel-muted hover:bg-pastel-bg-dark/10'
+                      }`}
+                    >
+                      {showBefore ? 'BEFORE' : 'Compare'}
+                    </button>
+                  )}
+                  <span className="text-[10px] font-mono text-pastel-teal bg-pastel-teal/10 px-1.5 py-0.5 rounded">
+                    v{imageVersion}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className={`aspect-square neumorphic-inset rounded-xl overflow-hidden mb-3 relative transition-all duration-300 ${
+              imageJustUpdated ? 'ring-2 ring-green-400 ring-offset-2' : ''
+            }`}>
+              {imageJustUpdated && (
+                <div className="absolute top-2 left-2 z-10 bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-full animate-pulse">
+                  Updated!
+                </div>
+              )}
               {(localImageUrl || item.image_url) ? (
                 <img
-                  src={localImageUrl || item.image_url}
-                  alt={item.name}
+                  key={showBefore ? 'before' : `v${imageVersion}`}
+                  src={showBefore ? previousImageUrl : (localImageUrl || item.image_url)}
+                  alt={showBefore ? `${item.name} (before)` : item.name}
                   className="w-full h-full object-cover"
                 />
               ) : (

@@ -19,6 +19,7 @@ import {
   hashObject,
 } from './redis';
 import { fetchTrends as apiFetchTrends, fetchCelebrities as apiFetchCelebrities } from '../lib/api-client';
+import { uploadProductImage, isSupabaseStorageUrl } from '../lib/image-storage';
 import type { CollectionConfig } from '../components/collection';
 import type { CollectionItem, BrandStyleJSON, FIBOPromptJSON } from '../types/database';
 
@@ -651,15 +652,26 @@ export class CollectionGeneratorV2 {
         }
       }
 
+      // Upload to Supabase Storage for permanent URL
+      let finalImageUrl = imageUrl;
+      if (imageUrl && !isSupabaseStorageUrl(imageUrl)) {
+        const storagePath = `collections/${item.collection_id}/${item.sku}`;
+        const publicUrl = await uploadProductImage(imageUrl, storagePath);
+        if (publicUrl) {
+          finalImageUrl = publicUrl;
+        }
+        // Falls back to Bria URL if upload fails
+      }
+
       const validations = await validationStorage.getByItemId(item.id);
       await collectionItemStorage.update(item.id, {
         fibo_prompt_json: structuredPrompt as any,
-        image_url: imageUrl,
+        image_url: finalImageUrl,
         brand_compliance_score: validations[0]?.compliance_score || 0,
         status: 'complete',
       });
 
-      console.log(`Generated image for ${item.name}: ${imageUrl}`);
+      console.log(`Generated image for ${item.name}: ${finalImageUrl}`);
 
       if (logger) {
         await logger.logImageGeneration(item.name, imageUrl, 'bria-request-id');

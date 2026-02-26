@@ -17,7 +17,7 @@ from shared.cache import cached
 GEMINI_FLASH_MODEL = os.environ.get("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
 GEMINI_IMAGE_MODEL = os.environ.get("GEMINI_FLASH_IMAGE_MODEL", "gemini-3-pro-image-preview")
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
+LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
 
 
 def get_client() -> genai.Client:
@@ -162,7 +162,7 @@ OUTPUT: Provide ONLY the image generation prompt (150-250 words). Start with the
 # Image Editing (targeted changes using Gemini 3 Pro Image)
 # --------------------------------------------------------------------------
 
-GEMINI_EDIT_IMAGE_MODEL = os.environ.get("GEMINI_EDIT_IMAGE_MODEL", GEMINI_IMAGE_MODEL)
+GEMINI_EDIT_IMAGE_MODEL = os.environ.get("GEMINI_EDIT_IMAGE_MODEL", "gemini-3-pro-image-preview")
 
 
 def edit_product_image(
@@ -175,28 +175,69 @@ def edit_product_image(
 
     Returns base64-encoded edited image.
     """
+    print(f"[Image Editor] === EDIT REQUEST ===")
+    print(f"[Image Editor] Model: {GEMINI_EDIT_IMAGE_MODEL}")
+    print(f"[Image Editor] Location: {LOCATION}")
+    print(f"[Image Editor] Instruction: {edit_instruction}")
+    print(f"[Image Editor] Input image size: {len(image_base64):,} chars")
+
     client = get_client()
 
     image_bytes = base64.b64decode(image_base64)
     image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
 
-    edit_prompt = f"""Edit this fashion product image with the following change:
+    # Detect color-change edits and amplify the instruction
+    color_keywords = ["color", "colour", "red", "blue", "green", "black", "white", "pink",
+                      "yellow", "orange", "purple", "navy", "teal", "gold", "silver",
+                      "beige", "cream", "brown", "gray", "grey", "burgundy", "maroon",
+                      "coral", "lavender", "olive", "turquoise", "magenta", "crimson"]
+    is_color_change = any(kw in edit_instruction.lower() for kw in color_keywords)
+
+    if is_color_change:
+        edit_prompt = f"""You MUST completely recolor this fashion product.
+
+INSTRUCTION: {edit_instruction}
+
+This is a COLOR CHANGE request. You MUST:
+1. COMPLETELY replace the fabric/material color of the garment with the new requested color
+2. The ENTIRE garment must be the new color — not just highlights or tints
+3. The new color must be SATURATED and VIVID — not a subtle tint
+4. Every visible surface of the fabric must change to the new color
+5. Keep the exact same garment shape, silhouette, background, and lighting
+6. Keep the exact same camera angle and composition
+7. The ONLY thing that should change is the color of the fabric/material
+
+CRITICAL: The before and after images must show an OBVIOUS, DRAMATIC color difference.
+If asked for "dark red", the garment must be clearly RED, not brownish-red or slightly tinted."""
+    else:
+        edit_prompt = f"""Edit this fashion product image. Apply this change clearly and visibly:
 {edit_instruction}
 
-IMPORTANT:
-- Preserve the overall composition, lighting, and background
-- Only change the specific element mentioned
+RULES:
+- Make the requested change OBVIOUS and DRAMATIC — the result must look visibly different
+- Preserve the garment silhouette, composition, lighting, and background
+- Only change the specific element mentioned (color, material, length, etc.)
 - Maintain professional e-commerce product photography quality
-- Keep the image clean and commercial-ready"""
+- The change must be immediately noticeable when comparing before and after"""
+
+    print(f"[Image Editor] Color change: {is_color_change}")
+    print(f"[Image Editor] Sending to {GEMINI_EDIT_IMAGE_MODEL}...")
 
     response = client.models.generate_content(
         model=GEMINI_EDIT_IMAGE_MODEL,
         contents=[image_part, edit_prompt],
         config=types.GenerateContentConfig(
             response_modalities=["image"],
-            temperature=0.5,
+            temperature=0.8 if is_color_change else 0.5,
         ),
     )
+
+    print(f"[Image Editor] Response received. Parts: {len(response.parts)}")
+    for i, part in enumerate(response.parts):
+        if part.text:
+            print(f"[Image Editor] Part {i}: text = {part.text[:200]}")
+        if part.inline_data:
+            print(f"[Image Editor] Part {i}: image ({part.inline_data.mime_type}, {len(part.inline_data.data):,} bytes)")
 
     edited_image = None
     for part in response.parts:
@@ -205,6 +246,16 @@ IMPORTANT:
             break
 
     if not edited_image:
+        print(f"[Image Editor] ERROR: No image in response!")
         raise ValueError("Gemini did not return an edited image")
 
-    return base64.b64encode(edited_image).decode("utf-8")
+    result_b64 = base64.b64encode(edited_image).decode("utf-8")
+    input_size = len(image_base64)
+    output_size = len(result_b64)
+    same = (result_b64 == image_base64)
+    print(f"[Image Editor] === EDIT COMPLETE ===")
+    print(f"[Image Editor] Output image size: {output_size:,} chars")
+    print(f"[Image Editor] Same as input: {same}")
+    print(f"[Image Editor] Size delta: {output_size - input_size:+,} chars")
+
+    return result_b64
