@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Eye, Shield, FileText, ChevronRight, Shirt, Footprints, Watch, CheckCircle, AlertTriangle, XCircle, Trash2, BookOpen, Loader2 } from 'lucide-react';
-import type { CollectionItem } from '../../types/database';
+import { Eye, Shield, FileText, ChevronRight, Shirt, Footprints, Watch, CheckCircle, AlertTriangle, XCircle, Trash2, BookOpen, Loader2, Calendar, MapPin, Users, Layers } from 'lucide-react';
+import type { Collection, CollectionItem } from '../../types/database';
 import { getComplianceBadge } from '../../lib/brand-guardian';
 
 interface ProductGalleryProps {
   items: CollectionItem[];
+  collection?: Collection | null;
   onSelectItem: (item: CollectionItem) => void;
   onViewValidation: (item: CollectionItem) => void;
   onViewTechPack: (item: CollectionItem) => void;
@@ -13,7 +14,7 @@ interface ProductGalleryProps {
   exportingLookbook?: boolean;
 }
 
-export function ProductGallery({ items, onSelectItem, onViewValidation, onViewTechPack, onDeleteItem, onExportLookbook, exportingLookbook }: ProductGalleryProps) {
+export function ProductGallery({ items, collection, onSelectItem, onViewValidation, onViewTechPack, onDeleteItem, onExportLookbook, exportingLookbook }: ProductGalleryProps) {
   const [filter, setFilter] = useState<'all' | 'apparel' | 'footwear' | 'accessories'>('all');
   const [sortBy, setSortBy] = useState<'name' | 'compliance' | 'status'>('name');
 
@@ -63,17 +64,76 @@ export function ProductGallery({ items, onSelectItem, onViewValidation, onViewTe
       : 0,
   };
 
+  const formatDate = (dateStr: string) => {
+    return new Date(dateStr).toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+    });
+  };
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-bold text-pastel-navy">Product Gallery</h2>
-          <p className="text-pastel-text-light">
-            {stats.total} products | Avg. compliance: {stats.avgCompliance}%
-          </p>
+      {/* Collection info banner */}
+      {collection && (
+        <div className="neumorphic-card p-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-bold text-pastel-navy">{collection.name}</h2>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2">
+                {collection.season && (
+                  <div className="flex items-center gap-1.5 text-sm text-pastel-text-light">
+                    <Calendar size={14} className="text-pastel-muted flex-shrink-0" />
+                    <span className="capitalize">{collection.season}</span>
+                  </div>
+                )}
+                {collection.region && (
+                  <div className="flex items-center gap-1.5 text-sm text-pastel-text-light">
+                    <MapPin size={14} className="text-pastel-muted flex-shrink-0" />
+                    <span>{collection.region}</span>
+                  </div>
+                )}
+                {collection.target_demographic && (
+                  <div className="flex items-center gap-1.5 text-sm text-pastel-text-light">
+                    <Users size={14} className="text-pastel-muted flex-shrink-0" />
+                    <span className="capitalize">{collection.target_demographic}</span>
+                  </div>
+                )}
+                <div className="flex items-center gap-1.5 text-sm text-pastel-text-light">
+                  <Layers size={14} className="text-pastel-muted flex-shrink-0" />
+                  <span>{stats.total} product{stats.total !== 1 ? 's' : ''}</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <span className={`text-xs px-2.5 py-1 rounded-full neumorphic-inset ${
+                collection.status === 'complete'
+                  ? 'text-emerald-600'
+                  : collection.status === 'generating'
+                  ? 'text-amber-600'
+                  : 'text-pastel-muted'
+              }`}>
+                {collection.status === 'complete' ? 'Complete' : collection.status === 'generating' ? 'Generating' : collection.status}
+              </span>
+              <span className="text-xs text-pastel-muted">{formatDate(collection.created_at)}</span>
+              <span className="text-sm font-medium text-pastel-accent">
+                Avg. compliance: {stats.avgCompliance}%
+              </span>
+            </div>
+          </div>
         </div>
+      )}
 
-        <div className="flex items-center gap-3">
+      {/* Gallery controls */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        {!collection && (
+          <div>
+            <h2 className="text-2xl font-bold text-pastel-navy">Product Gallery</h2>
+            <p className="text-pastel-text-light">
+              {stats.total} products | Avg. compliance: {stats.avgCompliance}%
+            </p>
+          </div>
+        )}
+
+        <div className={`flex items-center gap-3 ${collection ? 'ml-auto' : ''}`}>
           <select
             value={filter}
             onChange={(e) => setFilter(e.target.value as typeof filter)}

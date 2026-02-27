@@ -12,7 +12,7 @@ import { RedisHealthCheck } from './components/dashboard/RedisHealthCheck';
 import { useAuth } from './contexts/AuthContext';
 import { AuthPage } from './components/auth';
 import { LandingPage } from './components/landing';
-import type { BrandStyleJSON, CollectionItem } from './types/database';
+import type { BrandStyleJSON, Collection, CollectionItem } from './types/database';
 import {
   CollectionGeneratorV2,
   type GenerationProgress,
@@ -45,6 +45,7 @@ function AppContent() {
   const [appReady, setAppReady] = useState(false);
   const [showLanding, setShowLanding] = useState(true);
   const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null);
+  const [activeCollection, setActiveCollection] = useState<Collection | null>(null);
 
   const initializeBrand = useCallback(async () => {
     if (!user) return;
@@ -70,6 +71,7 @@ function AppContent() {
       if (allCollections.length > 0) {
         const latestCollection = allCollections[0];
         setActiveCollectionId(latestCollection.id);
+        setActiveCollection(latestCollection);
         const loadedItems = await collectionItemStorage.getByCollectionId(latestCollection.id);
         const successfulItems = loadedItems.filter(item => item.status === 'complete');
         setItems(successfulItems);
@@ -338,6 +340,7 @@ function AppContent() {
 
       // 3. Update React state to show gallery
       setActiveCollectionId(collection.id);
+      setActiveCollection(collection);
       setItems(savedItems);
 
       toast.success(`Collection "${result.collection_name}" saved!`, {
@@ -371,10 +374,17 @@ function AppContent() {
     setShowDetailModal(true);
   };
 
-  const handleLoadCollection = (collectionId: string, loadedItems: CollectionItem[]) => {
+  const handleLoadCollection = async (collectionId: string, loadedItems: CollectionItem[]) => {
     setActiveCollectionId(collectionId);
     setItems(loadedItems);
     setCurrentView('collection');
+    // Fetch full collection metadata for the gallery header
+    try {
+      const col = await collectionStorage.getById(collectionId);
+      setActiveCollection(col);
+    } catch {
+      setActiveCollection(null);
+    }
   };
 
   const handleDeleteCollectionItem = async (itemId: string) => {
@@ -482,6 +492,7 @@ function AppContent() {
             ) : items.length > 0 ? (
               <ProductGallery
                 items={items}
+                collection={activeCollection}
                 onSelectItem={handleSelectItem}
                 onViewValidation={handleViewValidation}
                 onViewTechPack={handleViewTechPack}
