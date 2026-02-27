@@ -5,13 +5,19 @@ Follows the same 2-step pattern as Imaginable's character_generator.py.
 """
 
 import os
+import io
 import base64
 import time
 from typing import Optional
+from PIL import Image
 from google import genai
 from google.genai import types
 
 from shared.cache import cached
+
+# Max dimension for images sent to the edit model (saves upload time + processing)
+_EDIT_MAX_DIM = 1024
+_EDIT_JPEG_QUALITY = 85
 
 
 GEMINI_FLASH_MODEL = os.environ.get("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
@@ -165,6 +171,44 @@ OUTPUT: Provide ONLY the image generation prompt (150-250 words). Start with the
 GEMINI_EDIT_IMAGE_MODEL = os.environ.get("GEMINI_EDIT_IMAGE_MODEL", "gemini-3-pro-image-preview")
 
 
+def _compress_for_edit(image_base64: str) -> tuple[bytes, str]:
+    """
+    Resize + compress an image before sending to the edit model.
+    Returns (compressed_bytes, mime_type).
+    Large PNGs (>500KB) are resized to max 1024px and converted to JPEG.
+    """
+    raw = base64.b64decode(image_base64)
+    original_kb = len(raw) / 1024
+
+    # Small images don't need compression
+    if original_kb < 500:
+        return raw, "image/png"
+
+    img = Image.open(io.BytesIO(raw))
+    w, h = img.size
+
+    # Resize if larger than max dimension
+    if max(w, h) > _EDIT_MAX_DIM:
+        ratio = _EDIT_MAX_DIM / max(w, h)
+        new_w, new_h = int(w * ratio), int(h * ratio)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        print(f"[Image Editor] Resized {w}x{h} → {new_w}x{new_h}")
+
+    # Convert to RGB JPEG for smaller size
+    if img.mode in ("RGBA", "P"):
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        if img.mode == "P":
+            img = img.convert("RGBA")
+        bg.paste(img, mask=img.split()[3] if img.mode == "RGBA" else None)
+        img = bg
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=_EDIT_JPEG_QUALITY)
+    compressed = buf.getvalue()
+    print(f"[Image Editor] Compressed {original_kb:.0f}KB → {len(compressed)/1024:.0f}KB (JPEG q{_EDIT_JPEG_QUALITY})")
+    return compressed, "image/jpeg"
+
+
 def edit_product_image(
     image_base64: str,
     edit_instruction: str,
@@ -183,8 +227,8 @@ def edit_product_image(
 
     client = get_client()
 
-    image_bytes = base64.b64decode(image_base64)
-    image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+    compressed_bytes, mime_type = _compress_for_edit(image_base64)
+    image_part = types.Part.from_bytes(data=compressed_bytes, mime_type=mime_type)
 
     # Detect color-change edits and amplify the instruction
     color_keywords = ["color", "colour", "red", "blue", "green", "black", "white", "pink",
@@ -194,21 +238,20 @@ def edit_product_image(
     is_color_change = any(kw in edit_instruction.lower() for kw in color_keywords)
 
     if is_color_change:
-        edit_prompt = f"""You MUST completely recolor this fashion product.
+        edit_prompt = f"""Edit the colors of this fashion product image.
 
 INSTRUCTION: {edit_instruction}
 
 This is a COLOR CHANGE request. You MUST:
-1. COMPLETELY replace the fabric/material color of the garment with the new requested color
-2. The ENTIRE garment must be the new color — not just highlights or tints
-3. The new color must be SATURATED and VIVID — not a subtle tint
-4. Every visible surface of the fabric must change to the new color
+1. ONLY change the specific color(s) mentioned in the instruction — leave all other colors untouched
+2. If the instruction says "change X to Y", find ONLY the areas that are color X and replace them with color Y
+3. All other colors in the garment must remain EXACTLY as they are
+4. The new color must be SATURATED and VIVID — not a subtle tint
 5. Keep the exact same garment shape, silhouette, background, and lighting
 6. Keep the exact same camera angle and composition
-7. The ONLY thing that should change is the color of the fabric/material
+7. This is a TARGETED, SURGICAL color replacement — NOT a full recolor
 
-CRITICAL: The before and after images must show an OBVIOUS, DRAMATIC color difference.
-If asked for "dark red", the garment must be clearly RED, not brownish-red or slightly tinted."""
+CRITICAL: Only the specific color mentioned should change. All other parts of the garment must stay identical."""
     else:
         edit_prompt = f"""Edit this fashion product image. Apply this change clearly and visibly:
 {edit_instruction}
@@ -223,14 +266,29 @@ RULES:
     print(f"[Image Editor] Color change: {is_color_change}")
     print(f"[Image Editor] Sending to {GEMINI_EDIT_IMAGE_MODEL}...")
 
-    response = client.models.generate_content(
-        model=GEMINI_EDIT_IMAGE_MODEL,
-        contents=[image_part, edit_prompt],
-        config=types.GenerateContentConfig(
-            response_modalities=["image"],
-            temperature=0.8 if is_color_change else 0.5,
-        ),
-    )
+    max_retries = 3
+    response = None
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_EDIT_IMAGE_MODEL,
+                contents=[image_part, edit_prompt],
+                config=types.GenerateContentConfig(
+                    response_modalities=["image"],
+                    temperature=0.8 if is_color_change else 0.5,
+                ),
+            )
+            break
+        except Exception as e:
+            if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < max_retries - 1:
+                wait = 5 * (attempt + 1)
+                print(f"[Image Editor] Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
+                time.sleep(wait)
+                continue
+            raise
+
+    if response is None:
+        raise ValueError("Image edit failed after all retries")
 
     print(f"[Image Editor] Response received. Parts: {len(response.parts)}")
     for i, part in enumerate(response.parts):

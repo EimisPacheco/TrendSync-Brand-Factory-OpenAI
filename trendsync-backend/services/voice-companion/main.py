@@ -59,6 +59,8 @@ os.environ["GOOGLE_CLOUD_LOCATION"] = VOICE_LOCATION
 _voice_sessions: dict[str, dict] = {}
 # Pending images from tool calls — picked up by the downstream WS loop and sent to the frontend
 _pending_images: dict[str, list[dict]] = {}  # session_id → list of {image_base64, ...}
+# Pending status messages for the frontend — tool_started / tool_completed
+_pending_status: dict[str, list[dict]] = {}  # session_id → list of {tool, status, message}
 
 # Tool call deduplication — prevents duplicate execution when LLM re-issues slow tools
 _tool_cache: dict[str, tuple[float, dict]] = {}  # "tool:key" → (timestamp, result)
@@ -114,6 +116,17 @@ def _get_session_data() -> dict:
     return {}
 
 
+def _queue_status(tool_name: str, status: str, message: str) -> None:
+    """Queue a status update to be sent to the frontend via WebSocket."""
+    for sid in _voice_sessions:
+        _pending_status.setdefault(sid, []).append({
+            "tool": tool_name,
+            "status": status,
+            "message": message,
+        })
+    logger.info("[Voice] Status queued: %s → %s (%s)", tool_name, status, message)
+
+
 def _queue_image_for_frontend(session_data: dict, image_base64: str, **extra: Any) -> None:
     """Queue an edited/generated image to be sent to the frontend via WebSocket."""
     session_data["image_base64"] = image_base64
@@ -160,7 +173,9 @@ async def analyze_product_image(question: str) -> dict:
     }
     brand_style = session_data.get("brand_style", {})
 
+    _queue_status("analyze_product_image", "started", "Analyzing product image...")
     result = design_tools.analyze_product(question, has_image, product_context, brand_style)
+    _queue_status("analyze_product_image", "completed", "Analysis complete")
     _dedup_set("analyze", question, result)
     return result
 
@@ -188,7 +203,9 @@ async def edit_product_image(edit_instruction: str) -> dict:
             "message": "No product image available to edit. Please make sure you're viewing a product.",
         }
 
+    _queue_status("edit_product_image", "started", f"Editing image: {edit_instruction[:60]}...")
     new_b64, result = await asyncio.to_thread(design_tools.edit_image, edit_instruction, image_base64)
+    _queue_status("edit_product_image", "completed", "Image edit complete")
 
     if new_b64:
         _queue_image_for_frontend(session_data, new_b64, edit_instruction=edit_instruction)
@@ -219,9 +236,11 @@ async def make_brand_compliant() -> dict:
         "category": session_data.get("product_category", ""),
     }
 
+    _queue_status("make_brand_compliant", "started", "Adjusting for brand compliance...")
     new_b64, result = await asyncio.to_thread(
         design_tools.make_compliant, image_base64, brand_style, product_context
     )
+    _queue_status("make_brand_compliant", "completed", "Brand compliance adjustment complete")
 
     if new_b64:
         _queue_image_for_frontend(
@@ -247,7 +266,9 @@ async def fetch_trend_data(query: str, season: str = "", region: str = "global",
     if cached:
         return cached
 
+    _queue_status("fetch_trend_data", "started", "Fetching latest trends...")
     result = await asyncio.to_thread(design_tools.get_trends, query, season, region, demographic)
+    _queue_status("fetch_trend_data", "completed", "Trends loaded")
     _dedup_set("trends", query, result)
     return result
 
@@ -286,9 +307,11 @@ async def generate_image_variation(variation_description: str, category: str = "
     session_data = _get_session_data()
     brand_style = session_data.get("brand_style", {})
 
+    _queue_status("generate_image_variation", "started", "Generating new image variation...")
     new_b64, result = await asyncio.to_thread(
         design_tools.generate_variation, variation_description, category, brand_style
     )
+    _queue_status("generate_image_variation", "completed", "Image variation ready")
 
     if new_b64:
         _queue_image_for_frontend(session_data, new_b64, description=variation_description)
@@ -836,6 +859,19 @@ async def voice_companion_endpoint(websocket: WebSocket, session_id: str) -> Non
 
                     await websocket.send_text(event_json)
 
+                # Deliver any pending status updates from tool calls to the frontend
+                pending_statuses = _pending_status.pop(session_id, [])
+                for status_msg in pending_statuses:
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "tool_status",
+                            "tool": status_msg.get("tool", ""),
+                            "status": status_msg.get("status", ""),
+                            "message": status_msg.get("message", ""),
+                        }))
+                    except Exception as e:
+                        logger.error("[voice_companion] Failed to send status: %s", e)
+
                 # Deliver any pending images from tool calls to the frontend
                 pending = _pending_images.pop(session_id, [])
                 for img_data in pending:
@@ -877,6 +913,8 @@ async def voice_companion_endpoint(websocket: WebSocket, session_id: str) -> Non
     finally:
         live_request_queue.close()
         _voice_sessions.pop(session_id, None)
+        _pending_status.pop(session_id, None)
+        _pending_images.pop(session_id, None)
 
 
 @app.get("/health")

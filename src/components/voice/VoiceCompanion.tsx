@@ -141,6 +141,8 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
   const [agentResponse, setAgentResponse] = useState('');
   const [lastAction, setLastAction] = useState<ToolAction | null>(null);
   const [showPanel, setShowPanel] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string>('');
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -281,9 +283,12 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
   }, []);
 
   const stopSession = useCallback(async () => {
+    console.log('[VoiceCompanion] 🛑 Stopping session...');
     isActiveRef.current = false;
     setIsActive(false);
     setIsConnecting(false);
+    setIsProcessing(false);
+    setStatusMessage('');
 
     if (workletNodeRef.current) {
       try { workletNodeRef.current.disconnect(); } catch { /* empty */ }
@@ -342,68 +347,192 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
       ws.onmessage = (ev) => {
         // Binary frame = raw PCM audio from the agent
         if (ev.data instanceof ArrayBuffer) {
+          console.log('[VoiceCompanion] 🔊 Audio chunk received:', ev.data.byteLength, 'bytes');
           playAudioChunk(ev.data);
           return;
         }
 
         try {
-          const payload = JSON.parse(String(ev.data ?? '{}'));
+          const raw = String(ev.data ?? '{}');
+          const payload = JSON.parse(raw);
+          console.log('[VoiceCompanion] 📨 WS message:', payload.type || 'event', payload);
 
+          // Input transcription (what the user said)
           if (payload.inputTranscription?.text) {
             const text = String(payload.inputTranscription.text).trim();
-            if (text) setTranscription((prev) => (prev ? prev + ' ' + text : text));
+            if (text) {
+              console.log('[VoiceCompanion] 🎤 USER:', text);
+              setTranscription((prev) => (prev ? prev + ' ' + text : text));
+              setStatusMessage('Processing your request...');
+              setIsProcessing(true);
+            }
           }
+
+          // Output transcription (what the agent said)
           if (payload.outputTranscription?.text) {
             const text = String(payload.outputTranscription.text).trim();
-            if (text) setAgentResponse((prev) => (prev ? prev + ' ' + text : text));
+            if (text) {
+              console.log('[VoiceCompanion] 🤖 AGENT:', text);
+              setAgentResponse((prev) => (prev ? prev + ' ' + text : text));
+              setIsProcessing(false);
+              setStatusMessage('');
+            }
+          }
+
+          // Tool calls — show status based on tool name
+          if (payload.toolCall || payload.tool_call) {
+            const toolName = payload.toolCall?.name || payload.tool_call?.name || 'unknown';
+            console.log('[VoiceCompanion] 🔧 Tool call detected:', toolName);
+            const toolStatusMap: Record<string, string> = {
+              edit_product_image: 'Editing product image...',
+              get_trend_data: 'Fetching latest trends...',
+              validate_brand_compliance: 'Checking brand compliance...',
+              generate_ad_video: 'Generating ad video...',
+              save_design: 'Saving design...',
+              navigate_to_page: 'Navigating...',
+              start_collection: 'Starting collection...',
+              make_brand_compliant: 'Adjusting for brand compliance...',
+              get_design_advice: 'Getting design advice...',
+            };
+            setStatusMessage(toolStatusMap[toolName] || `Running ${toolName}...`);
+            setIsProcessing(true);
+          }
+
+          // Tool results — clear processing
+          if (payload.toolResponse || payload.tool_response) {
+            const toolName = payload.toolResponse?.name || payload.tool_response?.name || 'unknown';
+            console.log('[VoiceCompanion] ✅ Tool response received:', toolName);
+            setIsProcessing(false);
+            setStatusMessage('');
           }
 
           const actions = extractToolActions(payload);
-          for (const action of actions) handleToolAction(action);
+          for (const action of actions) {
+            console.log('[VoiceCompanion] 🎬 Action extracted:', action.action, action.status);
+            // Show processing status for specific actions
+            if (action.status !== 'success' && action.status !== 'error') {
+              const actionStatusMap: Record<string, string> = {
+                edit_product_image: 'Editing product image...',
+                trend_data: 'Fetching trends...',
+                validation: 'Running validation...',
+                generate_ad_video: 'Creating ad video...',
+                save_design: 'Saving design...',
+                start_collection: 'Building collection...',
+                brand_compliant: 'Checking compliance...',
+                design_advice: 'Getting advice...',
+              };
+              if (actionStatusMap[action.action]) {
+                setStatusMessage(actionStatusMap[action.action]);
+                setIsProcessing(true);
+              }
+            } else {
+              setIsProcessing(false);
+              setStatusMessage('');
+            }
+            handleToolAction(action);
+          }
+
+          // Handle tool_status messages from backend (tool execution progress)
+          if (payload.type === 'tool_status') {
+            const toolDisplayNames: Record<string, string> = {
+              edit_product_image: 'Editing image',
+              analyze_product_image: 'Analyzing image',
+              make_brand_compliant: 'Adjusting compliance',
+              fetch_trend_data: 'Fetching trends',
+              generate_image_variation: 'Generating variation',
+              validate_brand_compliance: 'Validating design',
+            };
+            const displayName = toolDisplayNames[payload.tool] || payload.tool;
+            if (payload.status === 'started') {
+              console.log(`[VoiceCompanion] 🔧 Tool STARTED: ${payload.tool} — ${payload.message}`);
+              setStatusMessage(payload.message || `${displayName}...`);
+              setIsProcessing(true);
+            } else if (payload.status === 'completed') {
+              console.log(`[VoiceCompanion] ✅ Tool COMPLETED: ${payload.tool} — ${payload.message}`);
+              setStatusMessage(payload.message || `${displayName} done`);
+              setIsProcessing(false);
+              setTimeout(() => setStatusMessage(''), 3000);
+            }
+          }
 
           // Handle image updates from voice agent tools (_pending_images delivery)
           if (payload.type === 'image_updated' && payload.image_base64) {
-            console.log('[VoiceCompanion] Received image_updated message, base64 length:', payload.image_base64.length);
+            console.log('[VoiceCompanion] 🖼️ Image update received, base64 length:', payload.image_base64.length);
+            setStatusMessage('Applying image update...');
             const cb = onUpdateItemRef.current;
             if (cb) {
               const imageDataUrl = `data:image/png;base64,${payload.image_base64}`;
               cb({ image_url: imageDataUrl });
-              console.log('[VoiceCompanion] Product image updated from voice agent');
+              console.log('[VoiceCompanion] ✅ Product image updated from voice agent');
+              setStatusMessage('Image updated!');
+              setTimeout(() => setStatusMessage(''), 3000);
             } else {
-              console.warn('[VoiceCompanion] image_updated received but onUpdateItem is not set');
+              console.warn('[VoiceCompanion] ⚠️ image_updated received but onUpdateItem is not set');
             }
+            setIsProcessing(false);
+          }
+
+          // Session start ack
+          if (payload.type === 'ack') {
+            console.log('[VoiceCompanion] ✅ Session acknowledged:', payload.event);
+            setStatusMessage('Connected — speak naturally');
+            setTimeout(() => setStatusMessage(''), 3000);
           }
 
           if (payload.type === 'error') {
-            console.error('[VoiceCompanion] Agent error:', payload.message);
+            console.error('[VoiceCompanion] ❌ Agent error:', payload.message);
             setAgentResponse(payload.message || 'Voice agent encountered an error.');
+            setStatusMessage('Error occurred');
+            setIsProcessing(false);
+            setTimeout(() => setStatusMessage(''), 5000);
           }
-        } catch (e) { console.error('[VoiceCompanion] Error processing WS message:', e); }
+        } catch (e) {
+          console.error('[VoiceCompanion] ❌ Error processing WS message:', e);
+          setIsProcessing(false);
+        }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
+        console.log('[VoiceCompanion] 🔌 WebSocket closed, code:', ev.code, 'reason:', ev.reason);
         isActiveRef.current = false;
         setIsActive(false);
         setIsConnecting(false);
+        setIsProcessing(false);
+        setStatusMessage('Disconnected');
       };
 
-      ws.onerror = () => {
+      ws.onerror = (ev) => {
+        console.error('[VoiceCompanion] ❌ WebSocket error:', ev);
         setIsConnecting(false);
+        setIsProcessing(false);
+        setStatusMessage('Connection error');
         setAgentResponse('Could not connect to voice companion. Make sure the backend is running on port 8002.');
       };
 
+      console.log('[VoiceCompanion] 🔗 Connecting to WebSocket:', wsUrl);
+      setStatusMessage('Connecting to voice service...');
+
       await new Promise<void>((resolve, reject) => {
-        ws.onopen = () => resolve();
+        ws.onopen = () => {
+          console.log('[VoiceCompanion] ✅ WebSocket connected');
+          setStatusMessage('Connected — preparing session...');
+          resolve();
+        };
         ws.onerror = () => reject(new Error('Voice WS failed'));
       });
 
       // Convert product image to base64 for the voice agent
       let productImageBase64 = '';
       if (productItem?.image_url) {
+        console.log('[VoiceCompanion] 🖼️ Converting product image to base64...');
+        setStatusMessage('Sending product image...');
         productImageBase64 = await imageUrlToBase64(productItem.image_url);
+        console.log('[VoiceCompanion] 🖼️ Image base64 ready, length:', productImageBase64.length);
       }
 
       // Send start message with full product context
+      console.log('[VoiceCompanion] 📤 Sending start message with product context');
+      setStatusMessage('Starting voice session...');
       ws.send(
         JSON.stringify({
           type: 'start',
@@ -422,11 +551,14 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
       );
 
       // Wait for ack
+      console.log('[VoiceCompanion] ⏳ Waiting for session ack...');
+      setStatusMessage('Waiting for agent to start...');
       await new Promise<void>((resolve) => {
         const handler = (ev: MessageEvent) => {
           try {
             const p = JSON.parse(String(ev.data));
             if (p.type === 'ack' && p.event === 'start') {
+              console.log('[VoiceCompanion] ✅ Session ack received');
               ws.removeEventListener('message', handler);
               resolve();
             }
@@ -434,12 +566,15 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
         };
         ws.addEventListener('message', handler);
         setTimeout(() => {
+          console.log('[VoiceCompanion] ⏳ Ack timeout (3s) — proceeding anyway');
           ws.removeEventListener('message', handler);
           resolve();
         }, 3000);
       });
 
       // Start mic capture at 16kHz (required by Gemini Live) using AudioWorkletNode
+      console.log('[VoiceCompanion] 🎤 Requesting microphone access...');
+      setStatusMessage('Requesting microphone...');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const ac = new AudioContext({ sampleRate: 16000 });
@@ -479,13 +614,19 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
       };
 
       source.connect(workletNode);
+      console.log('[VoiceCompanion] 🎤 Microphone capture active (16kHz PCM)');
 
       isActiveRef.current = true;
       setIsActive(true);
       setIsConnecting(false);
+      setStatusMessage('Listening — speak naturally');
+      console.log('[VoiceCompanion] ✅ Voice session fully ready');
+      setTimeout(() => setStatusMessage(''), 3000);
     } catch (err) {
-      console.error('[VoiceCompanion] Start failed:', err);
+      console.error('[VoiceCompanion] ❌ Start failed:', err);
       setIsConnecting(false);
+      setIsProcessing(false);
+      setStatusMessage('Failed to start');
       setAgentResponse('Failed to start voice companion. Please check microphone permissions.');
     }
   };
@@ -553,7 +694,11 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
               <div>
                 <p className="text-white text-sm font-semibold">Voice Design Companion</p>
                 <p className="text-white/60 text-xs">
-                  {isActive ? 'Listening...' : isConnecting ? 'Connecting...' : 'Ready'}
+                  {isProcessing
+                    ? (statusMessage || 'Working...')
+                    : statusMessage
+                    ? statusMessage
+                    : isActive ? 'Listening...' : isConnecting ? 'Connecting...' : 'Ready'}
                 </p>
               </div>
             </div>
@@ -648,6 +793,14 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
               </div>
             )}
           </div>
+
+          {/* Processing status bar — always visible above footer */}
+          {(statusMessage || isProcessing) && (
+            <div className="px-4 py-2 border-t border-pastel-accent/20 bg-gradient-to-r from-pastel-accent/10 to-pastel-teal/10 flex items-center gap-2">
+              {isProcessing && <Loader2 size={14} className="text-pastel-accent animate-spin flex-shrink-0" />}
+              <span className="text-xs font-medium text-pastel-accent">{statusMessage || 'Working...'}</span>
+            </div>
+          )}
 
           {/* Footer tool badges */}
           <div className="px-4 py-2 border-t border-pastel-muted/20 flex flex-wrap gap-1">

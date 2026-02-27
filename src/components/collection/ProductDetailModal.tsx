@@ -51,26 +51,11 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
     }).catch(() => {});
   }, [currentItem?.id, isOpen]);
 
-  // Refresh item data from storage periodically to catch updates
+  // Sync currentItem whenever the parent updates the item prop (e.g. via onUpdateItem).
+  // No polling — in-memory edits are the source of truth until saved.
   useEffect(() => {
     if (!item || !isOpen) return;
-
-    // Initial set
     setCurrentItem(item);
-
-    // Poll for updates every 2000ms while modal is open (async DB calls)
-    const interval = setInterval(async () => {
-      try {
-        const updatedItem = await collectionItemStorage.getById(item.id);
-        if (updatedItem) {
-          setCurrentItem(updatedItem);
-        }
-      } catch (e) {
-        // Silently fail on poll
-      }
-    }, 2000);
-
-    return () => clearInterval(interval);
   }, [item, isOpen]);
 
   useEffect(() => {

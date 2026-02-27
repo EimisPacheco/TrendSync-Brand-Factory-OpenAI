@@ -1013,6 +1013,48 @@ async def design_companion(request: DesignCompanionRequest):
 
 
 # --------------------------------------------------------------------------
+# Direct Image Edit — bypasses ADK for fast image edits (1 API call vs 3)
+# --------------------------------------------------------------------------
+
+class DirectEditRequest(BaseModel):
+    image_base64: str
+    edit_instruction: str
+
+
+@app.post("/direct-edit-image")
+async def direct_edit_image(request: DirectEditRequest):
+    """Edit a product image directly without going through ADK.
+
+    This skips the LLM routing (Flash deciding which tool) and the LLM response
+    generation (Flash summarizing the result), cutting latency from 3 API calls to 1.
+    """
+    if not request.image_base64:
+        raise HTTPException(status_code=400, detail="No image provided")
+    if not request.edit_instruction:
+        raise HTTPException(status_code=400, detail="No edit instruction provided")
+
+    print(f"[Direct Edit] Instruction: {request.edit_instruction}")
+    print(f"[Direct Edit] Image size: {len(request.image_base64):,} chars")
+
+    try:
+        edited_b64 = await asyncio.to_thread(
+            edit_product_image, request.image_base64, request.edit_instruction
+        )
+        return {
+            "success": True,
+            "image_base64": edited_b64,
+            "message": f"Applied: {request.edit_instruction}",
+        }
+    except Exception as e:
+        error_msg = str(e)
+        is_rate_limited = "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg
+        print(f"[Direct Edit] Error: {error_msg}")
+        if is_rate_limited:
+            raise HTTPException(status_code=429, detail="Rate limited — please try again in a few seconds")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+# --------------------------------------------------------------------------
 # Save Design — analyze image and return updated specs for all tabs
 # --------------------------------------------------------------------------
 

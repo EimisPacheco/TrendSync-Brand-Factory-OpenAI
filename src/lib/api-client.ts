@@ -217,6 +217,24 @@ export async function designCompanionChat(params: {
   });
 }
 
+// ---------- Direct Image Edit (bypasses ADK — 1 API call vs 3) ----------
+
+export interface DirectEditResponse {
+  success: boolean;
+  image_base64: string;
+  message: string;
+}
+
+export async function directEditImage(params: {
+  image_base64: string;
+  edit_instruction: string;
+}) {
+  return apiFetch<DirectEditResponse>("/direct-edit-image", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
 // ---------- Save Design (analyze image → update all specs) ----------
 
 export interface SaveDesignResponse {

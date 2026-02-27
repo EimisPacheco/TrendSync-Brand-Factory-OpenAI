@@ -6,6 +6,7 @@ No ToolContext, no session state, no HTTP — just core logic calling shared mod
 
 import json
 import logging
+import time
 from typing import Optional
 
 from shared.image_generator import (
@@ -16,6 +17,15 @@ from shared.brand_guardian import validate_prompt, get_compliance_badge
 from shared.trend_engine import fetch_trends
 
 logger = logging.getLogger(__name__)
+
+_RATE_LIMIT_RETRIES = 3
+_RATE_LIMIT_DELAY = 8  # seconds between retries
+
+
+def _is_rate_limited(e: Exception) -> bool:
+    """Check if an exception is a 429 / RESOURCE_EXHAUSTED error."""
+    msg = str(e)
+    return "429" in msg or "RESOURCE_EXHAUSTED" in msg
 
 
 # --------------------------------------------------------------------------
@@ -73,16 +83,22 @@ def edit_image(edit_instruction: str, image_base64: str) -> tuple[Optional[str],
             "status": "error",
             "message": "No product image available to edit. Please generate an image first.",
         }
-    try:
-        edited_b64 = _edit_image(image_base64, edit_instruction)
-        return edited_b64, {
-            "action": "image_updated",
-            "status": "success",
-            "message": f"Applied edit: {edit_instruction}",
-        }
-    except Exception as e:
-        logger.error(f"[edit_image] Error: {e}")
-        return None, {"action": "image_updated", "status": "error", "message": str(e)}
+    for attempt in range(1, _RATE_LIMIT_RETRIES + 1):
+        try:
+            edited_b64 = _edit_image(image_base64, edit_instruction)
+            return edited_b64, {
+                "action": "image_updated",
+                "status": "success",
+                "message": f"Applied edit: {edit_instruction}",
+            }
+        except Exception as e:
+            if _is_rate_limited(e) and attempt < _RATE_LIMIT_RETRIES:
+                wait = _RATE_LIMIT_DELAY * attempt
+                logger.warning(f"[edit_image] Rate limited (attempt {attempt}/{_RATE_LIMIT_RETRIES}), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            logger.error(f"[edit_image] Error (attempt {attempt}): {e}")
+            return None, {"action": "image_updated", "status": "error", "message": str(e)}
 
 
 # --------------------------------------------------------------------------
@@ -112,28 +128,35 @@ def make_compliant(
             "message": "No brand colors configured. Please set up brand colors in the Brand Style Editor first.",
         }
 
-    try:
-        brand_colors = ", ".join(f"{c['name']} ({c['hex']})" for c in color_palette[:4])
-        edit_instruction = (
-            f"Adjust the colors of this product to match the brand palette: {brand_colors}. "
-            f"Keep the same structure, silhouette, and design details."
-        )
-        edited_b64 = _edit_image(image_base64, edit_instruction)
+    brand_colors = ", ".join(f"{c['name']} ({c['hex']})" for c in color_palette[:4])
+    edit_instruction = (
+        f"Adjust the colors of this product to match the brand palette: {brand_colors}. "
+        f"Keep the same structure, silhouette, and design details."
+    )
 
-        validation = validate_prompt(
-            {"description": product_context.get("name", ""), "color_scheme": brand_colors},
-            brand_style,
-        )
+    for attempt in range(1, _RATE_LIMIT_RETRIES + 1):
+        try:
+            edited_b64 = _edit_image(image_base64, edit_instruction)
 
-        return edited_b64, {
-            "action": "brand_compliant",
-            "status": "success",
-            "compliance_score": validation.get("compliance_score", 0),
-            "message": f"Design adjusted to brand palette ({brand_colors}). Compliance: {validation.get('compliance_score', 0)}%.",
-        }
-    except Exception as e:
-        logger.error(f"[make_compliant] Error: {e}")
-        return None, {"action": "brand_compliant", "status": "error", "message": str(e)}
+            validation = validate_prompt(
+                {"description": product_context.get("name", ""), "color_scheme": brand_colors},
+                brand_style,
+            )
+
+            return edited_b64, {
+                "action": "brand_compliant",
+                "status": "success",
+                "compliance_score": validation.get("compliance_score", 0),
+                "message": f"Design adjusted to brand palette ({brand_colors}). Compliance: {validation.get('compliance_score', 0)}%.",
+            }
+        except Exception as e:
+            if _is_rate_limited(e) and attempt < _RATE_LIMIT_RETRIES:
+                wait = _RATE_LIMIT_DELAY * attempt
+                logger.warning(f"[make_compliant] Rate limited (attempt {attempt}/{_RATE_LIMIT_RETRIES}), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            logger.error(f"[make_compliant] Error (attempt {attempt}): {e}")
+            return None, {"action": "brand_compliant", "status": "error", "message": str(e)}
 
 
 # --------------------------------------------------------------------------
@@ -265,20 +288,26 @@ def generate_variation(
     """
     Generate a new product image from scratch. Returns (new_base64 | None, result_dict).
     """
-    try:
-        image_b64 = _gen_image(
-            product_description=description,
-            category=category,
-            brand_style=brand_style,
-        )
-        return image_b64, {
-            "action": "image_updated",
-            "status": "success",
-            "message": f"Generated new variation: {description}",
-        }
-    except Exception as e:
-        logger.error(f"[generate_variation] Error: {e}")
-        return None, {"action": "image_updated", "status": "error", "message": str(e)}
+    for attempt in range(1, _RATE_LIMIT_RETRIES + 1):
+        try:
+            image_b64 = _gen_image(
+                product_description=description,
+                category=category,
+                brand_style=brand_style,
+            )
+            return image_b64, {
+                "action": "image_updated",
+                "status": "success",
+                "message": f"Generated new variation: {description}",
+            }
+        except Exception as e:
+            if _is_rate_limited(e) and attempt < _RATE_LIMIT_RETRIES:
+                wait = _RATE_LIMIT_DELAY * attempt
+                logger.warning(f"[generate_variation] Rate limited (attempt {attempt}/{_RATE_LIMIT_RETRIES}), retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            logger.error(f"[generate_variation] Error (attempt {attempt}): {e}")
+            return None, {"action": "image_updated", "status": "error", "message": str(e)}
 
 
 # --------------------------------------------------------------------------

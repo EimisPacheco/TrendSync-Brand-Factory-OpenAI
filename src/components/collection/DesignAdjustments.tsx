@@ -6,6 +6,42 @@ import { toast } from 'sonner';
 import { designCompanionChat, saveDesignAnalysis } from '../../lib/api-client';
 import { uploadProductImage, isSupabaseStorageUrl } from '../../lib/image-storage';
 
+/** Retry design companion calls up to `maxRetries` times on RESOURCE_EXHAUSTED (429).
+ *  Handles both HTTP-level errors AND 200 responses with error in the body. */
+async function withRetry(
+  fn: () => Promise<Awaited<ReturnType<typeof designCompanionChat>>>,
+  maxRetries = 3,
+  delayMs = 3000,
+): Promise<Awaited<ReturnType<typeof designCompanionChat>>> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await fn();
+      // Check for rate-limit error embedded in the response body (backend returns 200)
+      const msg = result.action?.message || result.response || '';
+      const isRateLimit = msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED');
+      if (isRateLimit && attempt < maxRetries) {
+        const wait = delayMs * attempt;
+        console.warn(`[DesignAdjustments] Rate limited (response body), retrying in ${wait}ms (attempt ${attempt}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      return result;
+    } catch (err) {
+      // HTTP-level errors (non-200 status)
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const isRateLimit = errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED');
+      if (isRateLimit && attempt < maxRetries) {
+        const wait = delayMs * attempt;
+        console.warn(`[DesignAdjustments] Rate limited (HTTP), retrying in ${wait}ms (attempt ${attempt}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Unreachable');
+}
+
 interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -55,6 +91,8 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
   const [sessionId] = useState(() => crypto.randomUUID());
   // Local image URL — survives parent DB-polling so edits don't revert
   const [localImageUrl, setLocalImageUrl] = useState<string>(item.image_url || '');
+  // Guard: when the typing agent sets localImageUrl, skip the voice-sync effect
+  const typingAgentUpdating = useRef(false);
   // Debug: track image edit history for before/after comparison
   const [imageVersion, setImageVersion] = useState(0);
   const [previousImageUrl, setPreviousImageUrl] = useState<string>('');
@@ -68,9 +106,12 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
   }, [item.id]);
 
   // Sync when voice agent updates image externally (data: URLs only).
-  // Normal DB-polling returns the original http(s) URL, so we ignore those
-  // to prevent reverting unsaved edits.
+  // Skip if the typing agent just set localImageUrl (guard prevents overwrite).
   useEffect(() => {
+    if (typingAgentUpdating.current) {
+      typingAgentUpdating.current = false;
+      return;
+    }
     if (item.image_url?.startsWith('data:') && item.image_url !== localImageUrl) {
       setLocalImageUrl(item.image_url);
       setHasUnsavedChanges(true);
@@ -217,7 +258,8 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
       if (prevUrl) {
         setPreviousImageUrl(prevUrl);
       }
-      // Update local state first — this is immune to parent DB-polling
+      // Update local state first — guard prevents voice-sync effect from overwriting
+      typingAgentUpdating.current = true;
       setLocalImageUrl(imageDataUrl);
       setImageVersion(v => v + 1);
       // Flash the "updated" indicator
@@ -260,13 +302,13 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
       // Use local (potentially edited) image so the agent sees the latest version
       const imageBase64 = await getImageBase64(localImageUrl || item.image_url);
 
-      const result = await designCompanionChat({
+      const result = await withRetry(() => designCompanionChat({
         session_id: sessionId,
         user_message: userInput,
         product_context: buildProductContext(),
         image_base64: imageBase64,
         brand_id: brandId,
-      });
+      }));
 
       await handleAgentResponse(result);
 
@@ -308,13 +350,13 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
       };
       setMessages(prev => [...prev, actionMessage]);
 
-      const result = await designCompanionChat({
+      const result = await withRetry(() => designCompanionChat({
         session_id: sessionId,
         user_message: 'Make this product fully brand-compliant. Adjust colors and design to match the brand guidelines.',
         product_context: buildProductContext(),
         image_base64: imageBase64,
         brand_id: brandId,
-      });
+      }));
 
       await handleAgentResponse(result);
 

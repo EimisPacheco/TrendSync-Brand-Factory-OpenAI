@@ -88,21 +88,8 @@ function AppContent() {
     }
   }, [user, authLoading, initializeBrand]);
 
-  useEffect(() => {
-    if (!showDetailModal || !activeCollectionId) return;
-
-    const interval = setInterval(async () => {
-      try {
-        const refreshedItems = await collectionItemStorage.getByCollectionId(activeCollectionId);
-        const successfulItems = refreshedItems.filter(item => item.status === 'complete');
-        setItems(successfulItems);
-      } catch (e) {
-        // Silently fail on poll
-      }
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, [showDetailModal, activeCollectionId]);
+  // Items are refreshed on modal close (onClose callback) — no polling needed.
+  // Polling was causing unsaved in-memory edits (from voice/design agent) to revert.
 
   if (authLoading) {
     return (
