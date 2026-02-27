@@ -134,7 +134,8 @@ def upload_to_gcs(local_path: str, object_name: str) -> str:
     return f"gs://{BUCKET_NAME}/{object_name}"
 
 
-FFMPEG_PATH = os.environ.get("FFMPEG_PATH", "/opt/homebrew/bin/ffmpeg")
+import shutil
+FFMPEG_PATH = os.environ.get("FFMPEG_PATH", shutil.which("ffmpeg") or "/usr/bin/ffmpeg")
 
 
 def stitch_videos(video_paths: List[str], output_path: str) -> None:
