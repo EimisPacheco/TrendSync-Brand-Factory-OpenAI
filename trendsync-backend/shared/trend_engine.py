@@ -26,6 +26,54 @@ def get_client() -> genai.Client:
     return genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
 
 
+def _repair_truncated_json(text: str) -> str:
+    """Attempt to repair truncated JSON by closing open brackets/braces and strings."""
+    # Track open delimiters
+    in_string = False
+    escape_next = False
+    open_stack: list[str] = []
+    last_idx = 0
+
+    for i, ch in enumerate(text):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in ('{', '['):
+            open_stack.append(ch)
+            last_idx = i
+        elif ch == '}' and open_stack and open_stack[-1] == '{':
+            open_stack.pop()
+            last_idx = i
+        elif ch == ']' and open_stack and open_stack[-1] == '[':
+            open_stack.pop()
+            last_idx = i
+
+    if not open_stack:
+        return text  # Nothing to repair
+
+    # Close open string if needed
+    repaired = text
+    if in_string:
+        repaired += '"'
+
+    # Remove trailing comma or incomplete key-value pairs
+    repaired = re.sub(r',\s*$', '', repaired.rstrip())
+
+    # Close all open brackets/braces in reverse order
+    for ch in reversed(open_stack):
+        repaired += '}' if ch == '{' else ']'
+
+    return repaired
+
+
 def _extract_json(text: str) -> Any:
     """Extract JSON from a response that may contain markdown fences or extra text."""
     # Try direct parse first
@@ -47,6 +95,18 @@ def _extract_json(text: str) -> Any:
         if start != -1 and end > start:
             try:
                 return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+    # Last resort: try repairing truncated JSON (Gemini sometimes cuts off mid-response)
+    for start_char in ["{", "["]:
+        start = text.find(start_char)
+        if start != -1:
+            candidate = text[start:]
+            repaired = _repair_truncated_json(candidate)
+            try:
+                result = json.loads(repaired)
+                print(f"[TrendEngine] Repaired truncated JSON ({len(candidate)} → {len(repaired)} chars)")
+                return result
             except json.JSONDecodeError:
                 pass
     raise ValueError(f"Could not extract JSON from response: {text[:200]}")
@@ -216,29 +276,52 @@ def fetch_trends(
     print(f"[TrendEngine] fetch_trends(source={trend_source}, region={region}, season={season}, demo={demographic})")
     t0 = time.time()
 
-    response = client.models.generate_content(
-        model=GEMINI_FLASH_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.7,
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-        ),
-    )
+    max_retries = 3
+    last_error: Exception | None = None
 
-    t1 = time.time()
-    print(f"[TrendEngine] Gemini response received in {t1 - t0:.1f}s ({len(response.text)} chars)")
-    print(f"[TrendEngine] === RAW AI RESPONSE (Trends) ===")
-    print(response.text[:3000])
-    print(f"[TrendEngine] === END RAW RESPONSE ===")
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_FLASH_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.7,
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                ),
+            )
 
-    trend_data = _extract_json(response.text)
-    result = _transform_to_insights(
-        trend_data,
-        is_celebrity,
-        {"season": season, "region": region, "demographic": demographic},
-    )
-    print(f"[TrendEngine] fetch_trends complete in {time.time() - t0:.1f}s — {len(result.get('colors', []))} colors, {len(result.get('silhouettes', []))} styles")
-    return result
+            t1 = time.time()
+            print(f"[TrendEngine] Gemini response received in {t1 - t0:.1f}s ({len(response.text)} chars)")
+            print(f"[TrendEngine] === RAW AI RESPONSE (Trends) ===")
+            print(response.text[:3000])
+            print(f"[TrendEngine] === END RAW RESPONSE ===")
+
+            trend_data = _extract_json(response.text)
+            result = _transform_to_insights(
+                trend_data,
+                is_celebrity,
+                {"season": season, "region": region, "demographic": demographic},
+            )
+            print(f"[TrendEngine] fetch_trends complete in {time.time() - t0:.1f}s — {len(result.get('colors', []))} colors, {len(result.get('silhouettes', []))} styles")
+            return result
+
+        except (ValueError, json.JSONDecodeError) as e:
+            last_error = e
+            print(f"[TrendEngine] JSON parse/validation failed (attempt {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(2 * attempt)
+                continue
+        except Exception as e:
+            err_msg = str(e)
+            if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) and attempt < max_retries:
+                wait = 5 * attempt
+                print(f"[TrendEngine] Rate limited (attempt {attempt}/{max_retries}), retrying in {wait}s...")
+                last_error = e
+                time.sleep(wait)
+                continue
+            raise
+
+    raise last_error or ValueError("fetch_trends failed after all retries")
 
 
 @cached(prefix="celebrities", ttl=86400)  # 24h cache
@@ -273,28 +356,51 @@ Return a JSON array:
 
 Include exactly 10 celebrities with real, accurate data."""
 
-    response = client.models.generate_content(
-        model=GEMINI_FLASH_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.7,
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-        ),
-    )
+    max_retries = 3
+    last_error: Exception | None = None
 
-    t1 = time.time()
-    print(f"[TrendEngine] Celebrity list Gemini response in {t1 - t0:.1f}s ({len(response.text)} chars)")
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_FLASH_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.7,
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                ),
+            )
 
-    celebrities = _extract_json(response.text)
-    if isinstance(celebrities, dict) and "celebrities" in celebrities:
-        celebrities = celebrities["celebrities"]
-    if not isinstance(celebrities, list):
-        celebrities = [celebrities] if isinstance(celebrities, dict) else []
+            t1 = time.time()
+            print(f"[TrendEngine] Celebrity list Gemini response in {t1 - t0:.1f}s ({len(response.text)} chars)")
 
-    return [
-        {
-            **celeb,
-            "influence_score": celeb.get("influence_score", 95 - i * 3),
-        }
-        for i, celeb in enumerate(celebrities)
-    ]
+            celebrities = _extract_json(response.text)
+            if isinstance(celebrities, dict) and "celebrities" in celebrities:
+                celebrities = celebrities["celebrities"]
+            if not isinstance(celebrities, list):
+                celebrities = [celebrities] if isinstance(celebrities, dict) else []
+
+            return [
+                {
+                    **celeb,
+                    "influence_score": celeb.get("influence_score", 95 - i * 3),
+                }
+                for i, celeb in enumerate(celebrities)
+            ]
+
+        except (ValueError, json.JSONDecodeError) as e:
+            last_error = e
+            print(f"[TrendEngine] Celebrity list JSON failed (attempt {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(2 * attempt)
+                continue
+        except Exception as e:
+            err_msg = str(e)
+            if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) and attempt < max_retries:
+                wait = 5 * attempt
+                print(f"[TrendEngine] Rate limited (attempt {attempt}/{max_retries}), retrying in {wait}s...")
+                last_error = e
+                time.sleep(wait)
+                continue
+            raise
+
+    raise last_error or ValueError("fetch_celebrity_list failed after all retries")
