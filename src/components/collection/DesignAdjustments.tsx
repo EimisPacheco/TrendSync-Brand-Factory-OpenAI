@@ -171,14 +171,30 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
     scrollToBottom();
   }, [messages]);
 
-  const buildProductContext = () => ({
-    name: item.name,
-    category: item.category,
-    subcategory: item.subcategory,
-    colors: item.design_spec_json?.colors,
-    materials: item.design_spec_json?.materials,
-    inspiration: item.design_spec_json?.inspiration,
-  });
+  // Context for the agent. Two flavours:
+  //   - "chat" includes the existing colors/materials so Lux knows what the
+  //     user is currently looking at when answering questions about the design.
+  //   - "save-analysis" deliberately OMITS those — the whole point of
+  //     /save-design is to RE-derive colors/materials/inspiration from the
+  //     (potentially edited) image. Including the stale palette anchors the
+  //     model to the old colors and it tends to repeat them even when the
+  //     image now shows a different colour entirely (the dark-red bug).
+  const buildProductContext = (
+    purpose: 'chat' | 'save-analysis' = 'chat',
+  ) => {
+    const base = {
+      name: item.name,
+      category: item.category,
+      subcategory: item.subcategory,
+    };
+    if (purpose === 'save-analysis') return base;
+    return {
+      ...base,
+      colors: item.design_spec_json?.colors,
+      materials: item.design_spec_json?.materials,
+      inspiration: item.design_spec_json?.inspiration,
+    };
+  };
 
   const saveCurrentDesign = async () => {
     setIsSaving(true);
@@ -187,10 +203,12 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
       const currentImageUrl = localImageUrl || item.image_url;
       const imageBase64 = await getImageBase64(currentImageUrl);
 
-      // 1. Analyze the current image to get updated specs for ALL tabs
+      // 1. Analyze the current image to get updated specs for ALL tabs.
+      // Pass the lean "save-analysis" context (no stale palette) so the model
+      // re-derives colours/materials from the image alone.
       const analysis = await saveDesignAnalysis({
         image_base64: imageBase64,
-        product_context: buildProductContext(),
+        product_context: buildProductContext('save-analysis'),
         brand_id: brandId,
       });
 
@@ -300,7 +318,16 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
 
     try {
       // Use local (potentially edited) image so the agent sees the latest version
-      const imageBase64 = await getImageBase64(localImageUrl || item.image_url);
+      const imageSrc = localImageUrl || item.image_url;
+      const imageBase64 = await getImageBase64(imageSrc);
+
+      const t0 = performance.now();
+      console.log(
+        `[design-adjust] ▶ sending edit: instruction=%c"${userInput}"%c  ` +
+        `image_url_type=${imageSrc?.startsWith('data:') ? 'data' : 'http'}  ` +
+        `b64_chars=${imageBase64?.length || 0}  session=${sessionId}`,
+        'color:#5B9BD5;font-weight:bold', 'color:inherit',
+      );
 
       const result = await withRetry(() => designCompanionChat({
         session_id: sessionId,
@@ -310,10 +337,20 @@ export function DesignAdjustments({ item, brandId, onUpdateItem }: DesignAdjustm
         brand_id: brandId,
       }));
 
+      const elapsed = Math.round(performance.now() - t0);
+      const action = (result?.action as { action?: string; image_base64?: string } | null) || null;
+      const imgB64 = action?.image_base64;
+      console.log(
+        `[design-adjust] ◀ backend ack: action=${action?.action || 'none'}  ` +
+        `elapsed=${elapsed}ms  ` +
+        `image_received=${imgB64 ? imgB64.length + 'ch' : 'none'}  ` +
+        `response_chars=${(result?.response || '').length}`,
+      );
+
       await handleAgentResponse(result);
 
     } catch (error) {
-      console.error('Error processing message:', error);
+      console.error('[design-adjust] ❌ error processing message:', error);
       toast.error('Failed to process your request. Please try again.');
 
       const errorMessage: Message = {

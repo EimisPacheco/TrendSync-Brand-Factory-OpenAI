@@ -77,7 +77,9 @@ def edit_image(edit_instruction: str, image_base64: str) -> tuple[Optional[str],
     Edit a product image. Returns (new_base64 | None, result_dict).
     Caller is responsible for storing the new image in its own state.
     """
+    print(f"[edit_image] instruction='{edit_instruction}'  input_image_chars={len(image_base64) if image_base64 else 0}")
     if not image_base64:
+        print(f"[edit_image] FAIL: no input image")
         return None, {
             "action": "image_updated",
             "status": "error",
@@ -86,6 +88,7 @@ def edit_image(edit_instruction: str, image_base64: str) -> tuple[Optional[str],
     for attempt in range(1, _RATE_LIMIT_RETRIES + 1):
         try:
             edited_b64 = _edit_image(image_base64, edit_instruction)
+            print(f"[edit_image] OK: new_image_chars={len(edited_b64) if edited_b64 else 0}")
             return edited_b64, {
                 "action": "image_updated",
                 "status": "success",
@@ -97,7 +100,7 @@ def edit_image(edit_instruction: str, image_base64: str) -> tuple[Optional[str],
                 logger.warning(f"[edit_image] Rate limited (attempt {attempt}/{_RATE_LIMIT_RETRIES}), retrying in {wait}s...")
                 time.sleep(wait)
                 continue
-            logger.error(f"[edit_image] Error (attempt {attempt}): {e}")
+            logger.error(f"[edit_image] FAIL (attempt {attempt}): {e}")
             return None, {"action": "image_updated", "status": "error", "message": str(e)}
 
 
