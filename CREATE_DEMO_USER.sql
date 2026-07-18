@@ -1,4 +1,5 @@
 -- Instructions to create the demo user account
+-- Updated: 2026-07-18
 -- Since we cannot create auth users directly through SQL, please follow these steps:
 
 -- OPTION 1: Use the signup form
