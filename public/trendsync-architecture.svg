@@ -1,0 +1,198 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100" role="img" aria-labelledby="title description">
+  <title id="title">TrendSync Brand Factory GPT and Codex architecture</title>
+  <desc id="description">Codex supports the build process. A React and Vite frontend connects to a FastAPI gateway, shared Python engines, a Node.js voice service, and a video service. Runtime AI uses GPT-5.6 Sol, GPT-5.6 Terra with web search, GPT Image 2, GPT Realtime 2.1, GPT-4o mini Transcribe, and Sora 2 Pro. Supabase, Redis, Google Cloud Storage, Foxit, Miro, and Resend provide data and delivery services.</desc>
+
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="7" stdDeviation="10" flood-color="#1e2a4a" flood-opacity="0.10"/>
+    </filter>
+    <linearGradient id="headerGradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e2a4a"/>
+      <stop offset="1" stop-color="#314b7a"/>
+    </linearGradient>
+    <linearGradient id="codexGradient" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f4edff"/>
+      <stop offset="1" stop-color="#e5f4ff"/>
+    </linearGradient>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b7db8"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b5cf6"/>
+    </marker>
+    <style>
+      .heading { font: 700 34px Inter, ui-sans-serif, system-ui, sans-serif; fill: #ffffff; }
+      .subheading { font: 400 17px Inter, ui-sans-serif, system-ui, sans-serif; fill: #dce7f8; }
+      .lane { font: 700 14px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: 1.4px; fill: #6b7892; }
+      .node-title { font: 700 20px Inter, ui-sans-serif, system-ui, sans-serif; fill: #1e2a4a; }
+      .node-body { font: 400 15px Inter, ui-sans-serif, system-ui, sans-serif; fill: #53627a; }
+      .node-model { font: 700 17px Inter, ui-sans-serif, system-ui, sans-serif; fill: #123f42; }
+      .pill { font: 700 12px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .7px; }
+      .small { font: 400 13px Inter, ui-sans-serif, system-ui, sans-serif; fill: #6b7892; }
+      .edge { fill: none; stroke: #5b7db8; stroke-width: 3; marker-end: url(#arrowBlue); }
+      .build-edge { fill: none; stroke: #8b5cf6; stroke-width: 2.5; stroke-dasharray: 9 8; marker-end: url(#arrowPurple); }
+      .connector-label { font: 600 12px Inter, ui-sans-serif, system-ui, sans-serif; fill: #6b7892; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1100" fill="#f7f9fc"/>
+
+  <rect x="40" y="32" width="1520" height="96" rx="24" fill="url(#headerGradient)"/>
+  <text x="78" y="76" class="heading">TrendSync Brand Factory</text>
+  <text x="78" y="104" class="subheading">GPT + Codex Hackathon Architecture · live fashion intelligence from trend signal to production and campaign</text>
+  <g transform="translate(1332 57)">
+    <rect width="188" height="44" rx="22" fill="#ffffff" fill-opacity="0.13" stroke="#ffffff" stroke-opacity="0.22"/>
+    <circle cx="26" cy="22" r="6" fill="#7ce2c9"/>
+    <text x="43" y="27" style="font:700 13px Inter,ui-sans-serif,system-ui,sans-serif;fill:#ffffff;letter-spacing:.5px">OPENAI-FIRST</text>
+  </g>
+
+  <text x="80" y="170" class="lane">BUILD-TIME COLLABORATION</text>
+  <g filter="url(#shadow)">
+    <rect x="80" y="188" width="1440" height="108" rx="22" fill="url(#codexGradient)" stroke="#cdbcf5"/>
+  </g>
+  <g transform="translate(112 218)">
+    <rect width="52" height="52" rx="14" fill="#7c5ce5"/>
+    <path d="M16 18l-7 8 7 8M36 18l7 8-7 8M30 13l-8 26" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="188" y="231" class="node-title">Codex</text>
+  <text x="188" y="256" class="node-body">Architecture · implementation · integration · debugging · testing · documentation</text>
+  <g transform="translate(1214 220)">
+    <rect width="266" height="42" rx="21" fill="#ffffff" stroke="#cdbcf5"/>
+    <text x="133" y="26" text-anchor="middle" class="pill" fill="#6d4bd4">BUILD-TIME ONLY · NOT RUNTIME</text>
+  </g>
+
+  <path class="build-edge" d="M 240 296 C 240 322, 240 326, 240 350"/>
+  <path class="build-edge" d="M 800 296 C 800 322, 720 326, 720 350"/>
+
+  <text x="80" y="338" class="lane">EXPERIENCE</text>
+  <g filter="url(#shadow)">
+    <rect x="80" y="352" width="320" height="150" rx="22" fill="#eef3ff" stroke="#afc7f3"/>
+  </g>
+  <g transform="translate(110 382)">
+    <rect width="54" height="44" rx="8" fill="#5b7db8"/>
+    <rect x="8" y="8" width="38" height="24" rx="3" fill="#dce8ff"/>
+    <path d="M18 39h18" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <text x="182" y="389" class="node-title">Web application</text>
+  <text x="182" y="416" class="node-body">React 18 · TypeScript · Vite</text>
+  <text x="182" y="440" class="node-body">Local :5173 · Vercel frontend</text>
+  <text x="182" y="464" class="node-body">Dashboard · collections · tech packs</text>
+
+  <text x="490" y="338" class="lane">APPLICATION SERVICES</text>
+  <g filter="url(#shadow)">
+    <rect x="490" y="352" width="460" height="150" rx="22" fill="#f0edff" stroke="#c4b7ed"/>
+  </g>
+  <g transform="translate(520 382)">
+    <circle cx="24" cy="22" r="23" fill="#7159c1"/>
+    <path d="M13 15h22M13 22h22M13 29h15" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <text x="579" y="389" class="node-title">Main backend API · :8000</text>
+  <text x="579" y="416" class="node-body">FastAPI gateway and orchestration</text>
+  <text x="579" y="440" class="node-body">Pipelines · tech packs · Miro/email</text>
+  <text x="579" y="464" class="node-body">WebSocket proxy to voice service</text>
+
+  <path class="edge" d="M 400 427 L 490 427"/>
+  <text x="445" y="416" text-anchor="middle" class="connector-label">HTTPS</text>
+
+  <g filter="url(#shadow)">
+    <rect x="490" y="548" width="460" height="156" rx="22" fill="#eeeaff" stroke="#c4b7ed"/>
+  </g>
+  <text x="520" y="585" class="node-title">Shared Python engines</text>
+  <text x="520" y="614" class="node-body">Trends · collections · image generation/editing</text>
+  <text x="520" y="638" class="node-body">Model composites · tech packs · video</text>
+  <text x="520" y="662" class="node-body">Brand guardrails · Redis caching</text>
+  <g transform="translate(810 570)">
+    <rect width="104" height="30" rx="15" fill="#ddd6fe"/>
+    <text x="52" y="20" text-anchor="middle" class="pill" fill="#6048aa">PYTHON</text>
+  </g>
+
+  <path class="edge" d="M 720 502 L 720 548"/>
+
+  <g filter="url(#shadow)">
+    <rect x="490" y="750" width="218" height="145" rx="22" fill="#e9f4ff" stroke="#a8cce9"/>
+    <rect x="732" y="750" width="218" height="145" rx="22" fill="#eaf8f1" stroke="#a6d8bd"/>
+  </g>
+  <text x="518" y="787" class="node-title">Voice service</text>
+  <text x="518" y="814" class="node-body">Node.js · ws · :8002</text>
+  <text x="518" y="838" class="node-body">PCM bridge · tools</text>
+  <text x="518" y="862" class="node-body">Realtime sessions</text>
+  <text x="760" y="787" class="node-title">Video service</text>
+  <text x="760" y="814" class="node-body">FastAPI · :8001</text>
+  <text x="760" y="838" class="node-body">Storyboard jobs</text>
+  <text x="760" y="862" class="node-body">Sora orchestration</text>
+
+  <path class="edge" d="M 665 704 L 599 750"/>
+  <path class="edge" d="M 775 704 L 841 750"/>
+
+  <text x="1060" y="338" class="lane">OPENAI MODEL LAYER</text>
+  <g filter="url(#shadow)">
+    <rect x="1060" y="352" width="460" height="152" rx="22" fill="#e8f8f5" stroke="#9dd7cc"/>
+    <rect x="1060" y="532" width="460" height="122" rx="22" fill="#e7f7f5" stroke="#9dd7cc"/>
+    <rect x="1060" y="682" width="460" height="132" rx="22" fill="#e7f3fb" stroke="#9fc7df"/>
+    <rect x="1060" y="842" width="460" height="112" rx="22" fill="#e9f8ef" stroke="#9fd4b5"/>
+  </g>
+
+  <text x="1090" y="389" class="node-model">Responses API</text>
+  <text x="1090" y="421" class="node-title">GPT-5.6 Sol</text>
+  <text x="1090" y="446" class="node-body">Collections · tech packs · art direction</text>
+  <text x="1090" y="476" class="node-title">GPT-5.6 Terra + web_search</text>
+  <text x="1090" y="497" class="node-body">Live trend intelligence</text>
+
+  <text x="1090" y="570" class="node-model">Images API</text>
+  <text x="1090" y="602" class="node-title">GPT Image 2</text>
+  <text x="1090" y="628" class="node-body">Product visuals · edits · model composites</text>
+
+  <text x="1090" y="720" class="node-model">Realtime API</text>
+  <text x="1090" y="752" class="node-title">GPT-Realtime 2.1</text>
+  <text x="1090" y="777" class="node-body">Voice conversation and tool use</text>
+  <text x="1090" y="800" class="node-body">GPT-4o mini Transcribe · speech input</text>
+
+  <text x="1090" y="880" class="node-model">Videos API</text>
+  <text x="1090" y="914" class="node-title">Sora 2 Pro</text>
+  <text x="1090" y="939" class="node-body">Image-guided campaign and product video</text>
+
+  <path class="edge" d="M 950 592 C 1000 592, 1010 428, 1060 428"/>
+  <path class="edge" d="M 950 630 C 1006 630, 1006 593, 1060 593"/>
+  <path class="edge" d="M 708 823 C 930 823, 980 748, 1060 748"/>
+  <path class="edge" d="M 950 823 C 1010 823, 1010 898, 1060 898"/>
+
+  <text x="80" y="944" class="lane">DATA + DELIVERY</text>
+  <g filter="url(#shadow)">
+    <rect x="80" y="965" width="910" height="102" rx="22" fill="#fff8e9" stroke="#eed59a"/>
+  </g>
+  <g transform="translate(105 986)">
+    <rect width="152" height="56" rx="14" fill="#ffffff" stroke="#ead6a8"/>
+    <text x="76" y="24" text-anchor="middle" class="node-title" style="font-size:16px">Supabase</text>
+    <text x="76" y="43" text-anchor="middle" class="small">DB · Auth · Storage</text>
+  </g>
+  <g transform="translate(277 986)">
+    <rect width="140" height="56" rx="14" fill="#ffffff" stroke="#ead6a8"/>
+    <text x="70" y="24" text-anchor="middle" class="node-title" style="font-size:16px">Redis</text>
+    <text x="70" y="43" text-anchor="middle" class="small">TTL cache</text>
+  </g>
+  <g transform="translate(437 986)">
+    <rect width="166" height="56" rx="14" fill="#ffffff" stroke="#ead6a8"/>
+    <text x="83" y="24" text-anchor="middle" class="node-title" style="font-size:16px">Cloud Storage</text>
+    <text x="83" y="43" text-anchor="middle" class="small">Generated media</text>
+  </g>
+  <g transform="translate(623 986)">
+    <rect width="148" height="56" rx="14" fill="#ffffff" stroke="#ead6a8"/>
+    <text x="74" y="24" text-anchor="middle" class="node-title" style="font-size:16px">Foxit</text>
+    <text x="74" y="43" text-anchor="middle" class="small">DOCX → PDF</text>
+  </g>
+  <g transform="translate(791 986)">
+    <rect width="174" height="56" rx="14" fill="#ffffff" stroke="#ead6a8"/>
+    <text x="87" y="24" text-anchor="middle" class="node-title" style="font-size:16px">Miro + Resend</text>
+    <text x="87" y="43" text-anchor="middle" class="small">Collaborate · deliver</text>
+  </g>
+
+  <path d="M 490 628 C 445 628, 445 930, 535 930 L 535 965" fill="none" stroke="#b99b55" stroke-width="2.5" marker-end="url(#arrowBlue)"/>
+  <text x="445" y="914" class="connector-label">data + assets</text>
+
+  <g transform="translate(1130 1002)">
+    <line x1="0" y1="0" x2="42" y2="0" stroke="#5b7db8" stroke-width="3" marker-end="url(#arrowBlue)"/>
+    <text x="54" y="5" class="small">runtime traffic</text>
+    <line x1="190" y1="0" x2="232" y2="0" stroke="#8b5cf6" stroke-width="2.5" stroke-dasharray="9 8" marker-end="url(#arrowPurple)"/>
+    <text x="244" y="5" class="small">build-time support</text>
+  </g>
+</svg>
