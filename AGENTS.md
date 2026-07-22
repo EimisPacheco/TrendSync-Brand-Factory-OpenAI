@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Project Overview
 
-TrendSync Brand Factory is an AI-powered fashion design platform. It analyzes real-time trends via Gemini + Google Search, generates brand-compliant collections with AI imagery, produces manufacturing-ready tech packs as PDFs via Foxit, creates ad videos with Veo 3.1, and offers text + voice design companions — all from a single dashboard.
+TrendSync Brand Factory is an AI-powered fashion design platform. It analyzes real-time trends via OpenAI Responses + hosted web search, generates brand-compliant collections with GPT Image, produces manufacturing-ready tech packs as PDFs via Foxit, creates ad videos with Sora, and offers text + voice design companions — all from a single dashboard.
 
 **This is an OpenAI-first AI project with Bria retained** — use OpenAI APIs and models for all new AI capabilities. Bria FIBO remains supported only through the `generate-product-image` Supabase Edge Function. Do not add Gemini, Vertex AI, Fal, Grok, Veo, or other AI providers.
 
@@ -27,28 +27,23 @@ cd trendsync-backend && pip install -r requirements.txt
 
 Start each service (each in its own terminal):
 ```bash
-# Main API gateway (port 8000) — all REST endpoints + ADK design companion
+# Main API gateway (port 8000) — all REST endpoints + Lux design companion
 cd trendsync-backend && uvicorn services.main-backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 # Video generation service (port 8001) — OpenAI Sora
 cd trendsync-backend && uvicorn services.video-gen-service.main:app --host 0.0.0.0 --port 8001 --reload
 
 # Voice companion (port 8002) — OpenAI Realtime audio streaming
-cd trendsync-backend && python -m services.voice-companion.main
-```
-
-### Redis (optional, for caching)
-```bash
-node redis-server.cjs  # Express wrapper on default Redis port
+cd trendsync-backend/services/voice-companion && npm install && npm run dev
 ```
 
 ### Database
 ```bash
 # Connect to Supabase via pooler (port 6543, NOT 5432)
-/opt/homebrew/Cellar/libpq/18.1/bin/psql "postgresql://postgres.dzuwhbzdjhjpoitzpysh:<password>@db.dzuwhbzdjhjpoitzpysh.supabase.co:6543/postgres"
+# Use the project pooler URL from your Supabase dashboard / linked project.
 ```
 
-Migrations live in `supabase/migrations/`. Many base tables were created via the Supabase dashboard and have no migration files.
+Migrations live in `supabase/migrations/`.
 
 ## Architecture
 
@@ -61,7 +56,7 @@ React (Vite :5173) → FastAPI (:8000) → OpenAI / Foxit / GCS
 
 **Frontend** (`src/`): React 18 + TypeScript + Tailwind with a neumorphic pastel theme. Auth via Supabase (`AuthContext.tsx`). All backend calls go through `src/lib/api-client.ts`. Database CRUD is abstracted in `src/services/db-storage.ts`.
 
-**Main backend** (`trendsync-backend/services/main-backend/main.py`): FastAPI app that serves as the API gateway. Endpoints for trends, collection generation, image gen, tech packs, PDF generation, the ADK design companion, pipeline orchestration, and a WebSocket proxy to the voice service.
+**Main backend** (`trendsync-backend/services/main-backend/main.py`): FastAPI app that serves as the API gateway. Endpoints for trends, collection generation, image gen, tech packs, PDF generation, the Lux design companion, pipeline orchestration, and a WebSocket proxy to the voice service.
 
 **Shared modules** (`trendsync-backend/shared/`): Reusable Python modules consumed by all three services:
 - `trend_engine.py` — OpenAI Responses API + hosted web search for fashion trends
@@ -71,17 +66,17 @@ React (Vite :5173) → FastAPI (:8000) → OpenAI / Foxit / GCS
 - `techpack_generator.py` — Manufacturing specs via OpenAI Responses API
 - `ad_video_engine.py` — OpenAI Sora storyboard + video generation
 - `foxit_service.py` — DOCX → Foxit Cloud → PDF pipeline
-- `design_tools.py` — 7 tools shared between text and voice companions
+- `design_tools.py` — tools shared between text and voice companions
 - `cache.py` — Redis caching with TTL decorator
 
 **Design Companion** (`design_agent.py`): OpenAI Agents SDK agent ("Lux") with OpenAI function tools.
 
-**Voice Companion** (`services/voice-companion/`): OpenAI Realtime agent with bidirectional WebSocket and raw PCM audio streaming.
+**Voice Companion** (`services/voice-companion/`): Node.js OpenAI Realtime agent with bidirectional WebSocket and raw PCM audio streaming.
 
 ### Key Data Flow: Full Pipeline
 ```
-POST /adk/pipeline → trends (OpenAI web search) → collection plan (OpenAI Responses API)
- → image gen per product (GPT Image 2) → ad video (Sora 2, 5 scenes)
+POST /adk/pipeline → trends (gpt-5.6-terra + web_search) → collection plan (gpt-5.6-sol)
+ → image gen per product (gpt-image-2) → ad video (sora-2-pro)
 ```
 
 ### Key Data Flow: Tech Pack PDF
@@ -93,37 +88,40 @@ UI generates tech pack → save to Supabase (single source of truth)
 
 ## OpenAI Model Usage
 
-| Model | Location | Purpose |
-|-------|----------|---------|
-| `gpt-5.5` | OpenAI Responses API | Collection planning, tech packs, storyboards |
-| `gpt-5-mini` | OpenAI Responses API | Fast web-grounded trend tasks |
-| `gpt-image-2` | OpenAI Images API | Product generation, edits, composites |
-| `gpt-realtime` | OpenAI Realtime API | Voice companion |
-| `sora-2-pro` | OpenAI Videos API | Image-guided ad video generation |
+These are the default models wired in code today (overridable via env vars):
+
+| Model | Env override | Location | Purpose |
+|-------|--------------|----------|---------|
+| `gpt-5.6-sol` | `OPENAI_MODEL` | Responses API / Agents SDK | Collection planning, tech packs, storyboards, Lux design companion |
+| `gpt-5.6-terra` | `OPENAI_TREND_MODEL` | Responses API + `web_search` | Web-grounded trend intelligence |
+| `gpt-image-2` | `OPENAI_IMAGE_MODEL` | Images API | Product generation, edits, model composites |
+| `gpt-realtime-2.1` | `OPENAI_VOICE_MODEL` | Realtime API | Voice companion (fallback: `gpt-realtime-2`) |
+| `gpt-4o-mini-transcribe` | — | Realtime transcription | English speech transcription for voice |
+| `sora-2-pro` | `OPENAI_VIDEO_MODEL` | Videos API | Image-guided ad video generation |
 
 - Use the OpenAI SDK / REST APIs with `OPENAI_API_KEY`.
 - The hosted `web_search` tool requires reasoning effort `low` or higher.
+- Design companion falls back from `gpt-5.6-sol` to `gpt-5.6-terra` when needed.
 
 ## Database (Supabase)
 
-11 tables with RLS. Key entities: `brands`, `brand_styles` (versioned JSONB), `collections`, `collection_items`, `trend_insights`, `validations`, `generated_images`, `tech_packs`, `generation_jobs`, `user_profiles`, `login_audit`.
+Key entities: `brands`, `brand_styles` (versioned JSONB), `collections`, `collection_items`, `trend_insights`, `validations`, `generated_images`, `tech_packs`, `generation_jobs`, `user_profiles`, `login_audit`, `company_models`.
 
 `brand_styles.style_json` (JSONB) contains: `colorPalette`, `cameraSettings`, `lightingConfig`, `logoRules`, `materialLibrary`, `negativePrompts`, `aspectRatios`.
 
 ## Critical Gotchas
 
-- **ADK token limit**: NEVER return large data (base64 images) in tool response dicts. ADK serializes `function_response` into conversation history. Store large data in the external `_IMAGE_STORE` dict and extract after `run_async()`.
-- **ADK state_delta**: Values are stored in session state but NOT injected into prompts unless the agent instruction has `{var_name}` template patterns.
-- **Google Search grounding**: Incompatible with `response_mime_type="application/json"`. Use a two-pass approach (grounded text → parse JSON).
-- **Tech pack consistency**: Gemini hallucates different values per call. Always save once to Supabase and enforce the PDF endpoint reads saved data only.
+- **Large tool payloads**: NEVER return large data (base64 images) in tool response dicts. Store large data in an external store and extract after the agent run completes.
+- **Tech pack consistency**: Always save once to Supabase and enforce the PDF endpoint reads saved data only — do not regenerate specs on PDF export.
 - **Supabase port**: Port 5432 refuses connections; use port **6543** (pooler).
 - **`auth.users.confirmed_at`**: Generated column — update `email_confirmed_at` only.
 - **ffmpeg**: Located at `/opt/homebrew/bin/ffmpeg` (not in PATH), hardcoded in video-gen-service.
 - **Foxit async pattern**: Submit task → poll every 2s → 120s timeout → fallback if compression fails.
+- **Sora constraints**: Human-face model references are blocked; use product-only image guidance. Valid durations are 4/8/12/16/20 seconds.
 
 ## Styling Conventions
 
-- Neumorphic pastel theme defined in `tailwind.config.js`
+- Neumorphic pastel theme (Tailwind)
 - Custom shadow classes: `shadow-neumorphic`, `shadow-neumorphic-sm`, `shadow-neumorphic-inset`
 - Color palette: pastel navy (`#1E2A4A`), accent blue (`#5B9BD5`), teal (`#6BB5B5`), muted (`#8A9AB5`)
 - Generous border radii: `rounded-2xl`, `rounded-3xl`, `rounded-4xl`

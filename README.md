@@ -19,17 +19,17 @@ TrendSync is intentionally OpenAI-first. The product uses specialized OpenAI mod
 
 Codex is a build-time collaborator, not a runtime dependency. The app’s production experience is powered by the services and models below.
 
-| Capability | OpenAI model or service | Role |
-|---|---|---|
-| Collection planning, tech packs, art direction, storyboards, design companion | `gpt-5.6-sol` | Deep reasoning and structured fashion-design work |
-| Trend intelligence | `gpt-5.6-terra` + hosted `web_search` | Fast, web-grounded trend synthesis with low reasoning effort |
-| Product generation, edits, and model composites | `gpt-image-2` | Brand-aware visual generation and multi-image editing |
-| Live voice companion | `gpt-realtime-2.1` | Low-latency speech-to-speech conversation and tool use |
-| Voice transcription | `gpt-4o-mini-transcribe` | English speech transcription for the live voice experience |
-| Campaign and product video | `sora-2-pro` | Image-guided cinematic video generation |
-| Hackathon pitch narration | `gpt-4o-mini-tts` | AI-generated voiceover asset |
+| Capability | OpenAI model or service | Env override | Role |
+|---|---|---|---|
+| Collection planning, tech packs, art direction, storyboards, Lux design companion | `gpt-5.6-sol` (fallback `gpt-5.6-terra`) | `OPENAI_MODEL` | Deep reasoning and structured fashion-design work |
+| Trend intelligence | `gpt-5.6-terra` + hosted `web_search` | `OPENAI_TREND_MODEL` | Fast, web-grounded trend synthesis with low reasoning effort |
+| Product generation, edits, and model composites | `gpt-image-2` | `OPENAI_IMAGE_MODEL` | Brand-aware visual generation and multi-image editing |
+| Live voice companion | `gpt-realtime-2.1` (fallback `gpt-realtime-2`) | `OPENAI_VOICE_MODEL` | Low-latency speech-to-speech conversation and tool use |
+| Voice transcription | `gpt-4o-mini-transcribe` | — | English speech transcription for the live voice experience |
+| Campaign and product video | `sora-2-pro` | `OPENAI_VIDEO_MODEL` | Image-guided cinematic video generation |
+| Hackathon pitch narration | `gpt-4o-mini-tts` | — | AI-generated voiceover asset |
 
-> The legacy Supabase `generate-product-image` function can still use Bria FIBO. All current first-party AI workflows added to the platform use OpenAI.
+> The Supabase `generate-product-image` edge function retains Bria FIBO. All other first-party AI workflows use OpenAI.
 
 ## What the app does
 
@@ -44,6 +44,8 @@ Codex is a build-time collaborator, not a runtime dependency. The app’s produc
 - **Miro and email delivery:** sends production artifacts to collaborative Miro boards and supports email-based handoff.
 
 ## Architecture
+
+![TrendSync Brand Factory GPT and Codex architecture](public/trendsync-architecture.svg)
 
 ```mermaid
 flowchart LR
