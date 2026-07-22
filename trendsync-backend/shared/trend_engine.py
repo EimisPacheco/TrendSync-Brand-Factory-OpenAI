@@ -1,7 +1,7 @@
 """
 Trend Intelligence Engine
-Uses Gemini 2.5 Flash with Google Search grounding for real-time fashion trend analysis.
-Port of gemini-trends.ts to Python using Vertex AI.
+Uses OpenAI's Responses API with the hosted `web_search` tool for real-time
+fashion trend analysis.
 """
 
 import os
@@ -9,21 +9,55 @@ import json
 import re
 import time
 from typing import Any, Dict, List, Optional
-from google import genai
-from google.genai import types
+
+from openai import OpenAI
 
 from shared.cache import cached
 
 
-GEMINI_FLASH_MODEL = os.environ.get("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+# Trend search is bound by the *slowest* leg in the pipeline: a hosted
+# web_search call + reasoning. GPT-5.6 Sol's default reasoning ("medium") on a
+# search-heavy prompt is unnecessarily expensive for this retrieval task.
+# GPT-5.6 Terra with effort=low preserves search quality while keeping latency
+# and cost appropriate for the high-throughput trend route.
+#
+# Override via OPENAI_TREND_MODEL / OPENAI_TREND_EFFORT to fine-tune.
+OPENAI_MODEL = os.environ.get(
+    "OPENAI_TREND_MODEL", os.environ.get("OPENAI_MODEL", "gpt-5.6-terra")
+)
+OPENAI_EFFORT = os.environ.get("OPENAI_TREND_EFFORT", "low")  # "minimal" disallowed w/ web_search
+
+def get_client() -> OpenAI:
+    """Create an OpenAI client using OPENAI_API_KEY from the environment."""
+    print(f"[TrendEngine] Using OpenAI Responses API (model={OPENAI_MODEL}, effort={OPENAI_EFFORT})")
+    return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 
-def get_client() -> genai.Client:
-    """Create Gemini client using Vertex AI with service account credentials."""
-    print(f"[TrendEngine] Using Vertex AI auth (project={PROJECT_ID}, location={LOCATION})")
-    return genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
+def _web_search_text(client: OpenAI, prompt: str, temperature: float = 0.7) -> str:
+    """
+    Call OpenAI's Responses API with the hosted `web_search` tool and return
+    the plain text output. The two-pass JSON pattern (grounded text -> parsed
+    JSON) is preserved because hosted-search tools are typically incompatible
+    with strict structured-output formats — we therefore do NOT pass any
+    response_format parameter here.
+
+    Reasoning models (gpt-5.x) reject `temperature`, so we omit it for those
+    models and only pass it for the legacy gpt-4.x family that still supports it.
+    Reasoning effort is "low" by default — web_search bans "minimal".
+    """
+    kwargs: dict = {
+        "model": OPENAI_MODEL,
+        "input": prompt,
+        "tools": [{"type": "web_search"}],
+    }
+    if OPENAI_MODEL.startswith("gpt-4"):
+        kwargs["temperature"] = temperature
+    elif OPENAI_EFFORT and OPENAI_EFFORT.lower() not in ("none", "off", ""):
+        # gpt-5.x reasoning models accept reasoning effort; pass only if requested.
+        # ("none"/"off"/empty -> omit the param entirely so the model decides).
+        kwargs["reasoning"] = {"effort": OPENAI_EFFORT}
+    response = client.responses.create(**kwargs)
+    return response.output_text
 
 
 def _repair_truncated_json(text: str) -> str:
@@ -97,7 +131,7 @@ def _extract_json(text: str) -> Any:
                 return json.loads(text[start : end + 1])
             except json.JSONDecodeError:
                 pass
-    # Last resort: try repairing truncated JSON (Gemini sometimes cuts off mid-response)
+    # Last resort: try repairing truncated JSON (LLMs sometimes cut off mid-response)
     for start_char in ["{", "["]:
         start = text.find(start_char)
         if start != -1:
@@ -121,11 +155,11 @@ def _transform_to_insights(
     is_celebrity: bool,
     config: Dict[str, str],
 ) -> Dict[str, Any]:
-    """Transform raw Gemini JSON into normalised TrendInsights."""
+    """Transform raw trend-search JSON into normalised TrendInsights."""
     if not trend_data.get("key_colors"):
-        raise ValueError("No color trends returned from Gemini")
+        raise ValueError("No color trends returned from trend search")
     if not trend_data.get("trending_styles"):
-        raise ValueError("No style trends returned from Gemini")
+        raise ValueError("No style trends returned from trend search")
 
     insights: Dict[str, Any] = {
         "colors": [
@@ -260,7 +294,7 @@ def fetch_trends(
     trend_source: str = "regional",
 ) -> Dict[str, Any]:
     """
-    Fetch fashion trend insights using Gemini + Google Search grounding.
+    Fetch fashion trend insights using OpenAI Responses API + hosted web_search.
     """
     if not season:
         season = _current_season()
@@ -281,22 +315,15 @@ def fetch_trends(
 
     for attempt in range(1, max_retries + 1):
         try:
-            response = client.models.generate_content(
-                model=GEMINI_FLASH_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.7,
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                ),
-            )
+            text = _web_search_text(client, prompt, temperature=0.7)
 
             t1 = time.time()
-            print(f"[TrendEngine] Gemini response received in {t1 - t0:.1f}s ({len(response.text)} chars)")
+            print(f"[TrendEngine] OpenAI response received in {t1 - t0:.1f}s ({len(text)} chars)")
             print(f"[TrendEngine] === RAW AI RESPONSE (Trends) ===")
-            print(response.text[:3000])
+            print(text[:3000])
             print(f"[TrendEngine] === END RAW RESPONSE ===")
 
-            trend_data = _extract_json(response.text)
+            trend_data = _extract_json(text)
             result = _transform_to_insights(
                 trend_data,
                 is_celebrity,
@@ -313,7 +340,12 @@ def fetch_trends(
                 continue
         except Exception as e:
             err_msg = str(e)
-            if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) and attempt < max_retries:
+            # Permanent: no quota / billing — retrying is pure waste. Fail fast.
+            if "insufficient_quota" in err_msg or "billing" in err_msg.lower():
+                print(f"[TrendEngine] Account out of quota — failing fast (no retry).")
+                raise
+            # Transient throttling: retry with backoff.
+            if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "rate limit" in err_msg.lower()) and attempt < max_retries:
                 wait = 5 * attempt
                 print(f"[TrendEngine] Rate limited (attempt {attempt}/{max_retries}), retrying in {wait}s...")
                 last_error = e
@@ -361,19 +393,12 @@ Include exactly 10 celebrities with real, accurate data."""
 
     for attempt in range(1, max_retries + 1):
         try:
-            response = client.models.generate_content(
-                model=GEMINI_FLASH_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.7,
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                ),
-            )
+            text = _web_search_text(client, prompt, temperature=0.7)
 
             t1 = time.time()
-            print(f"[TrendEngine] Celebrity list Gemini response in {t1 - t0:.1f}s ({len(response.text)} chars)")
+            print(f"[TrendEngine] Celebrity list OpenAI response in {t1 - t0:.1f}s ({len(text)} chars)")
 
-            celebrities = _extract_json(response.text)
+            celebrities = _extract_json(text)
             if isinstance(celebrities, dict) and "celebrities" in celebrities:
                 celebrities = celebrities["celebrities"]
             if not isinstance(celebrities, list):
@@ -395,7 +420,12 @@ Include exactly 10 celebrities with real, accurate data."""
                 continue
         except Exception as e:
             err_msg = str(e)
-            if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) and attempt < max_retries:
+            # Permanent: no quota / billing — retrying is pure waste. Fail fast.
+            if "insufficient_quota" in err_msg or "billing" in err_msg.lower():
+                print(f"[TrendEngine] Account out of quota — failing fast (no retry).")
+                raise
+            # Transient throttling: retry with backoff.
+            if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "rate limit" in err_msg.lower()) and attempt < max_retries:
                 wait = 5 * attempt
                 print(f"[TrendEngine] Rate limited (attempt {attempt}/{max_retries}), retrying in {wait}s...")
                 last_error = e

@@ -43,7 +43,7 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
             </div>
             <h3 className="text-xl font-semibold text-pastel-navy mb-2">AI-Powered Design</h3>
             <p className="text-pastel-muted text-sm">
-              Generate complete fashion collections powered by Google Gemini AI and real-time trend analysis from Google Search.
+              Generate complete fashion collections powered by OpenAI and real-time trend analysis from OpenAI Web Search.
             </p>
           </div>
 
@@ -83,7 +83,7 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
             </div>
             <h3 className="text-xl font-semibold text-pastel-navy mb-2">FIBO Image Gen</h3>
             <p className="text-pastel-muted text-sm">
-              Generate high-quality, production-ready fashion images using Bria's advanced FIBO API technology.
+              Generate high-quality, production-ready fashion images with GPT Image 2 and validate each design against FIBO rules.
             </p>
           </div>
 
@@ -132,7 +132,7 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
         </div>
 
         <footer className="text-center mt-16 text-pastel-muted text-sm">
-          <p>Powered by Google Gemini AI • Bria FIBO • Supabase</p>
+          <p>Powered by OpenAI GPT Image 2 • Fal Video • FIBO validation • Supabase</p>
         </footer>
       </div>
     </div>

@@ -1,5 +1,14 @@
-# Core AI SDK - manages all web framework and AI dependencies
-google-adk==1.18.0
+# Web framework
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
+
+# OpenAI
+# - openai: Responses API, GPT Image, Sora Videos API, and hosted web_search
+# - openai-agents: Lux design-companion chat agent (design_agent.py)
+# Sora Videos API requires the current 2.x SDK surface.
+openai>=2.0.0
+openai-agents>=0.2.0
 
 # Google Cloud
 google-cloud-storage>=2.14.0

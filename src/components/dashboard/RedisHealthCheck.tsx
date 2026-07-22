@@ -55,7 +55,7 @@ export function RedisHealthCheck() {
   };
 
   const handleClearCache = async () => {
-    if (!window.confirm('Clear ALL cached data? Next API calls will hit Gemini again.')) return;
+    if (!window.confirm('Clear ALL cached data? Next API calls will hit upstream providers (OpenAI / Gemini / Fal) again.')) return;
 
     setIsLoading(true);
     try {
@@ -187,7 +187,7 @@ export function RedisHealthCheck() {
             Cache Benefits
           </h4>
           <ul className="text-sm text-pastel-text space-y-1">
-            <li>✓ Gemini trends cached for 24 hours</li>
+            <li>✓ OpenAI trend results cached for 24 hours</li>
             <li>✓ Image generation cached for 24 hours</li>
             <li>✓ Celebrity data cached for 24 hours</li>
             <li>✓ Backed by Redis Cloud (persistent across restarts)</li>

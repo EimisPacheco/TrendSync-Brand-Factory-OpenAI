@@ -9,14 +9,14 @@ import { getRedisValue, setRedisValue } from './redis-api';
  * Cache Key Generators
  */
 export const CACHE_KEYS = {
-  GEMINI_TREND: (season: string, region: string, demographic: string) =>
-    `trends:gemini:${season}:${region}:${demographic}`,
+  OPENAI_TREND: (season: string, region: string, demographic: string) =>
+    `trends:openai:${season}:${region}:${demographic}`,
 
-  GEMINI_CELEBRITY_TREND: (demographic: string) =>
-    `gemini:trend:celebrity:${demographic}`,
+  OPENAI_CELEBRITY_TREND: (demographic: string) =>
+    `openai:trend:celebrity:${demographic}`,
   
-  BRIA_STRUCTURED_PROMPT: (hash: string) =>
-    `prompt:bria:${hash}`,
+  OPENAI_IMAGE_PROMPT: (hash: string) =>
+    `prompt:openai:${hash}`,
   
   RATE_LIMIT: (api: string, userId: string) =>
     `ratelimit:${api}:${userId}`,
@@ -26,8 +26,8 @@ export const CACHE_KEYS = {
  * Cache TTL (Time To Live) in seconds
  */
 export const CACHE_TTL = {
-  GEMINI_TRENDS: 24 * 60 * 60, // 24 hours
-  BRIA_PROMPTS: 7 * 24 * 60 * 60, // 7 days
+  OPENAI_TRENDS: 24 * 60 * 60, // 24 hours
+  OPENAI_IMAGE_PROMPTS: 7 * 24 * 60 * 60, // 7 days
   RATE_LIMIT: 60 * 60, // 1 hour
 };
 

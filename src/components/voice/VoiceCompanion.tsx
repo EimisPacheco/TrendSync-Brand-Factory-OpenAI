@@ -48,7 +48,10 @@ function DesignerAvatar({ size = 38, active = false }: { size?: number; active?:
   );
 }
 
-/** Deep-scan an ADK event payload for tool call results (deduplicated). */
+/** Deep-scan a Realtime event payload for tool call results (deduplicated).
+ *  The Node voice-companion service emits results in an ADK-compatible shape
+ *  ({content:{parts:[{functionResponse:{name, response:{action, status, …}}}]}}),
+ *  so this extractor keeps working unchanged. */
 function extractToolActions(payload: unknown): ToolAction[] {
   const actions: ToolAction[] = [];
   const seen = new Set<string>();
@@ -506,7 +509,7 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
         setIsConnecting(false);
         setIsProcessing(false);
         setStatusMessage('Connection error');
-        setAgentResponse('Could not connect to voice companion. Make sure the backend is running on port 8002.');
+        setAgentResponse('Could not connect to voice companion. Make sure the OpenAI Realtime voice service is running on port 8002 and OPENAI_API_KEY is set.');
       };
 
       console.log('[VoiceCompanion] 🔗 Connecting to WebSocket:', wsUrl);
@@ -572,12 +575,12 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
         }, 3000);
       });
 
-      // Start mic capture at 16kHz (required by Gemini Live) using AudioWorkletNode
+      // The current OpenAI Realtime API accepts PCM audio at 24kHz.
       console.log('[VoiceCompanion] 🎤 Requesting microphone access...');
       setStatusMessage('Requesting microphone...');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-      const ac = new AudioContext({ sampleRate: 16000 });
+      const ac = new AudioContext({ sampleRate: 24000 });
       audioContextRef.current = ac;
 
       // Register the PCM capture worklet processor inline (no separate file needed)
@@ -614,7 +617,7 @@ export function VoiceCompanion({ currentView, onNavigate, brandName, productItem
       };
 
       source.connect(workletNode);
-      console.log('[VoiceCompanion] 🎤 Microphone capture active (16kHz PCM)');
+      console.log('[VoiceCompanion] 🎤 Microphone capture active (24kHz PCM)');
 
       isActiveRef.current = true;
       setIsActive(true);

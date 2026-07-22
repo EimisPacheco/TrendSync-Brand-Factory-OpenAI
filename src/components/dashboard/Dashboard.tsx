@@ -14,8 +14,8 @@ export function Dashboard({ onNavigate }: DashboardProps) {
             Welcome to TrendSync Brand Factory
           </h1>
           <p className="text-lg text-pastel-text leading-relaxed mb-8">
-            Create trend-aware, on-brand fashion collections powered by Gemini AI trend intelligence
-            (including celebrity fashion analysis) and Bria FIBO deterministic image generation.
+            Create trend-aware, on-brand fashion collections powered by OpenAI trend intelligence
+            (including celebrity fashion analysis) and GPT Image 2 product generation with deterministic FIBO validation.
           </p>
           <div className="flex flex-wrap gap-4">
             <button
@@ -40,7 +40,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
         <QuickActionCard
           icon={<TrendingUp className="text-pastel-teal" size={28} />}
           title="Trend Intelligence"
-          description="Discover regional, seasonal & celebrity fashion trends using Gemini AI"
+          description="Discover regional, seasonal & celebrity fashion trends using OpenAI + Web Search"
           action="Explore Trends"
           onClick={() => onNavigate('trends')}
         />
@@ -72,7 +72,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
           <WorkflowStep
             number={2}
             title="Discover Trends"
-            description="Gemini AI analyzes regional & celebrity fashion trends"
+            description="OpenAI + Web Search analyzes regional & celebrity fashion trends"
           />
           <WorkflowStep
             number={3}

@@ -454,6 +454,7 @@ class ImageGenRequest(BaseModel):
     product_description: str
     category: str
     brand_id: str = ""
+    brand_style: Optional[Dict[str, Any]] = None
     trend_colors: Optional[List[Dict[str, Any]]] = None
     trend_materials: Optional[List[Dict[str, Any]]] = None
 
@@ -461,7 +462,7 @@ class ImageGenRequest(BaseModel):
 @app.post("/generate-image")
 async def generate_image(request: ImageGenRequest):
     try:
-        brand_style = BRAND_STYLES.get(request.brand_id, {})
+        brand_style = request.brand_style or BRAND_STYLES.get(request.brand_id, {})
         image_b64 = generate_product_image(
             product_description=request.product_description,
             category=request.category,
@@ -503,7 +504,7 @@ class GenerateModelCompositeRequest(BaseModel):
 
 @app.post("/generate-model-composite")
 async def generate_model_composite_endpoint(request: GenerateModelCompositeRequest):
-    """Composite a product image onto a model image (Gemini multi-image edit)."""
+    """Composite a product image onto a model image with GPT Image 2."""
     try:
         # Fetch model image bytes (it's a public GCS URL)
         import requests
@@ -648,17 +649,24 @@ def _fetch_company_model_image_url(model_id: str) -> Optional[str]:
 def _maybe_composite_with_model(
     product_image_base64: Optional[str],
     model_id: Optional[str],
+    model_image_url: Optional[str] = None,
 ) -> Optional[str]:
-    """If a model_id is provided, composite the product onto the model and
+    """If a model is selected, composite the product onto the model image and
     return the composite base64. Otherwise return the original product image.
-    On any failure, falls back to the original product image."""
-    if not model_id or not product_image_base64:
+    On any failure, falls back to the original product image.
+
+    Prefers `model_image_url` (sent directly by the frontend, which already
+    has it from the catalog). Falls back to a Supabase REST lookup of
+    `model_id` only if no URL was provided — that path requires
+    SUPABASE_URL + SUPABASE_ANON_KEY env vars.
+    """
+    if not product_image_base64 or (not model_id and not model_image_url):
         return product_image_base64
     try:
         import requests as _requests
         from shared.model_composite import composite_model_with_product
 
-        image_url = _fetch_company_model_image_url(model_id)
+        image_url = model_image_url or _fetch_company_model_image_url(model_id or "")
         if not image_url:
             print(f"[Model Composite] No image_url for model_id={model_id}")
             return product_image_base64
@@ -667,7 +675,7 @@ def _maybe_composite_with_model(
         r.raise_for_status()
         model_b64 = base64.b64encode(r.content).decode("utf-8")
 
-        print(f"[Model Composite] Compositing product onto model {model_id}...")
+        print(f"[Model Composite] Compositing product onto model (id={model_id}, url={image_url[:60]}...)")
         return composite_model_with_product(model_b64, product_image_base64)
     except Exception as e:
         print(f"[Model Composite] failed, falling back to product image: {e}")
@@ -761,7 +769,7 @@ async def get_ad_video(ad_id: str):
 
 
 # --------------------------------------------------------------------------
-# Single Product Video (on-demand, 10-second Veo advertisement)
+# Single Product Video (on-demand, configured Fal video provider)
 # --------------------------------------------------------------------------
 
 PRODUCT_VIDEO_STATUS: Dict[str, Dict[str, Any]] = {}
@@ -773,6 +781,9 @@ class ProductVideoRequest(BaseModel):
     brand_id: str = ""
     image_base64: Optional[str] = None
     model_id: Optional[str] = None
+    # Public URL of the chosen company model image. Sent by the frontend
+    # so the backend can composite without needing Supabase env access.
+    model_image_url: Optional[str] = None
     # Clip length in seconds. None -> use the engine default (8s).
     # Frontend currently exposes 8 / 15 / 20.
     duration_seconds: Optional[int] = None
@@ -781,19 +792,30 @@ class ProductVideoRequest(BaseModel):
 def generate_product_video_background(video_id: str, params: Dict[str, Any]):
     try:
         PRODUCT_VIDEO_STATUS[video_id]["status"] = "generating"
-        PRODUCT_VIDEO_STATUS[video_id]["message"] = "Creating video prompt and generating with Veo..."
+        PRODUCT_VIDEO_STATUS[video_id]["message"] = "Creating video prompt and generating with the video provider..."
         PRODUCT_VIDEO_STATUS[video_id]["updated_at"] = time.time()
 
         brand_style = BRAND_STYLES.get(params.get("brand_id", ""), {})
 
-        # If a company-model is selected, composite the product onto the model
-        # and use that image instead of the raw product photo. The has_model
-        # flag drives a different video prompt that keeps the model in-frame
-        # instead of asking for a product-only shot.
+        # Company-model video references are unavailable until Sora accepts
+        # human-face reference images; see the explicit guard below.
         model_id = params.get("model_id")
+        model_image_url = params.get("model_image_url")
+        if model_id or model_image_url:
+            # OpenAI Sora currently rejects input references that contain human
+            # faces. Reject before creating an expensive GPT Image composite so
+            # the UI receives a precise, actionable status instead of an
+            # eventual opaque Sora render failure.
+            raise ValueError(
+                "OpenAI Sora currently cannot use a company-model reference image "
+                "because human-face input references are restricted. Generate a "
+                "product-only video, or retry after this capability is enabled."
+            )
         original_image_b64 = params.get("image_base64")
-        product_image_b64 = _maybe_composite_with_model(original_image_b64, model_id)
-        has_model = bool(model_id) and product_image_b64 != original_image_b64
+        product_image_b64 = _maybe_composite_with_model(
+            original_image_b64, model_id, model_image_url
+        )
+        has_model = bool(model_id or model_image_url) and product_image_b64 != original_image_b64
 
         video_data = generate_single_product_video(
             product=params["product"],

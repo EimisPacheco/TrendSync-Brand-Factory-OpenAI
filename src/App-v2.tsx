@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Timer } from 'lucide-react';
+import { formatElapsed } from './lib/format';
 import { Toaster, toast } from 'sonner';
 import { Sidebar, type View } from './components/layout';
 import { Dashboard } from './components/dashboard';
@@ -7,6 +9,7 @@ import { ValidationDemo } from './components/brand-guardian';
 import { CollectionPlanner, ProductGallery, ProductDetailModal, CollectionLibrary, type CollectionConfig } from './components/collection';
 import { TrendInsightsView } from './components/trends';
 import { Settings } from './components/settings';
+import { CompanyModelsView } from './components/models/CompanyModelsView';
 import { ProgressBar, ProductGallerySkeleton } from './components/ui';
 import { RedisHealthCheck } from './components/dashboard/RedisHealthCheck';
 import { useAuth } from './contexts/AuthContext';
@@ -38,6 +41,12 @@ function AppContent() {
   const [generating, setGenerating] = useState(false);
   const [brandId, setBrandId] = useState<string>('');
   const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null);
+  // Wall-clock timer for the collection-generation pipeline. `startedAt` is
+  // set when the run begins; `elapsedMs` ticks once a second while generating;
+  // `lastDurationMs` holds the final time once a run finishes (success or fail).
+  const [generationStartedAt, setGenerationStartedAt] = useState<number | null>(null);
+  const [generationElapsedMs, setGenerationElapsedMs] = useState(0);
+  const [lastGenerationDurationMs, setLastGenerationDurationMs] = useState<number | null>(null);
   const [selectedItem, setSelectedItem] = useState<CollectionItem | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [initialDetailTab, setInitialDetailTab] = useState<'overview' | 'fibo' | 'validation' | 'techpack' | 'design' | 'video'>('overview');
@@ -46,6 +55,15 @@ function AppContent() {
   const [showLanding, setShowLanding] = useState(true);
   const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null);
   const [activeCollection, setActiveCollection] = useState<Collection | null>(null);
+
+  // 1 Hz ticker — only running while a generation is in flight.
+  useEffect(() => {
+    if (!generating || generationStartedAt == null) return;
+    const id = setInterval(() => {
+      setGenerationElapsedMs(Date.now() - generationStartedAt);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [generating, generationStartedAt]);
 
   const initializeBrand = useCallback(async () => {
     if (!user) return;
@@ -147,19 +165,16 @@ function AppContent() {
       return;
     }
 
-    const briaApiKey = import.meta.env.VITE_BRIA_API_KEY;
-    if (!briaApiKey) {
-      toast.error('Bria API key not configured', { description: 'Please add VITE_BRIA_API_KEY to your .env file' });
-      return;
-    }
-
     setItems([]);
     setGenerating(true);
+    const startedAt = Date.now();
+    setGenerationStartedAt(startedAt);
+    setGenerationElapsedMs(0);
+    setLastGenerationDurationMs(null);
     const toastId = toast.loading('Starting collection generation...');
 
     try {
       const generator = new CollectionGeneratorV2(
-        briaApiKey,
         (progress) => {
           setGenerationProgress(progress);
           if (progress.message) toast.loading(progress.message, { id: toastId });
@@ -172,36 +187,42 @@ function AppContent() {
       const generatedItems = await collectionItemStorage.getByCollectionId(result.collectionId);
       setItems(generatedItems);
 
+      const tookMs = Date.now() - startedAt;
+      const tookLabel = formatElapsed(tookMs);
+
       if (result.stats.failed === 0) {
-        toast.success('Collection generated successfully!', {
+        toast.success(`Collection generated in ${tookLabel}`, {
           id: toastId,
           description: `Created ${result.stats.successful} products with brand validation.`,
         });
       } else if (result.stats.successful > 0) {
-        toast.warning('Collection partially generated', {
+        toast.warning(`Collection partially generated in ${tookLabel}`, {
           id: toastId,
           description: `${result.stats.successful} succeeded, ${result.stats.failed} failed.`,
         });
       } else {
-        toast.error('Collection generation failed', { id: toastId, description: 'All products failed to generate images.' });
+        toast.error(`Collection generation failed after ${tookLabel}`, { id: toastId, description: 'All products failed to generate images.' });
       }
     } catch (error) {
       console.error('Failed to generate collection:', error);
+      const tookLabel = formatElapsed(Date.now() - startedAt);
       if (error instanceof CollectionGeneratorError) {
-        toast.error(`Failed at ${error.stage}`, {
+        toast.error(`Failed at ${error.stage} after ${tookLabel}`, {
           id: toastId,
           description: error.message,
           action: { label: 'Retry', onClick: () => handleGenerateCollection(config) },
         });
       } else {
-        toast.error('Collection generation failed', {
+        toast.error(`Collection generation failed after ${tookLabel}`, {
           id: toastId,
           description: error instanceof Error ? error.message : 'Unknown error occurred',
         });
       }
     } finally {
+      setLastGenerationDurationMs(Date.now() - startedAt);
       setGenerating(false);
       setGenerationProgress(null);
+      setGenerationStartedAt(null);
     }
   };
 
@@ -479,12 +500,27 @@ function AppContent() {
             />
             {generating && generationProgress && (
               <div className="neumorphic-card p-6">
-                <h3 className="text-lg font-semibold text-pastel-navy mb-4">
-                  {generationProgress.message || 'Generating collection...'}
-                </h3>
+                <div className="flex items-start justify-between gap-4 mb-4">
+                  <h3 className="text-lg font-semibold text-pastel-navy flex-1">
+                    {generationProgress.message || 'Generating collection...'}
+                  </h3>
+                  <div
+                    className="flex items-center gap-1.5 text-sm font-medium text-pastel-accent neumorphic-inset px-3 py-1.5 rounded-xl tabular-nums whitespace-nowrap"
+                    title="Elapsed time since generation started"
+                  >
+                    <Timer size={14} />
+                    {formatElapsed(generationElapsedMs)}
+                  </div>
+                </div>
                 {generationProgress.stage === 'generating_images' && generationProgress.total && (
                   <ProgressBar current={generationProgress.current || 0} total={generationProgress.total} />
                 )}
+              </div>
+            )}
+            {!generating && lastGenerationDurationMs != null && items.length > 0 && (
+              <div className="neumorphic-inset px-4 py-2 rounded-xl text-xs text-pastel-muted flex items-center gap-2 w-fit">
+                <Timer size={13} className="text-pastel-accent" />
+                Generated in <span className="font-semibold text-pastel-navy">{formatElapsed(lastGenerationDurationMs)}</span>
               </div>
             )}
             {generating && items.length === 0 ? (
@@ -511,6 +547,9 @@ function AppContent() {
             onLoadCollection={handleLoadCollection}
           />
         );
+
+      case 'company-models':
+        return <CompanyModelsView />;
 
       case 'trends':
         return <TrendInsightsView />;

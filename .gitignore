@@ -42,3 +42,6 @@ dump.rdb
 
 # Claude
 .claude/
+
+# Supabase CLI local cache
+supabase/.temp/

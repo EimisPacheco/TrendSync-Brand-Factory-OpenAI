@@ -106,12 +106,12 @@ export function CollectionPlanner({ onGenerateCollection, onPipelineComplete, lo
           if (fetchedCelebrities && fetchedCelebrities.length > 0) {
             setCelebrities(fetchedCelebrities);
           } else {
-            setCelebrityError('No celebrity data received from Gemini API. The API might be unavailable or returned empty results.');
+            setCelebrityError('No celebrity data received from OpenAI. The API might be unavailable or returned empty results.');
           }
         })
         .catch(error => {
           console.error('Failed to fetch celebrity insights:', error);
-          setCelebrityError(`Failed to load celebrity data: ${error.message || 'Unknown error occurred'}. Please check your Gemini API key and try again.`);
+          setCelebrityError(`Failed to load celebrity data: ${error.message || 'Unknown error occurred'}. Please check your OPENAI_API_KEY in the backend .env and try again.`);
         })
         .finally(() => {
           setLoadingCelebrities(false);
@@ -591,12 +591,12 @@ The TodoWrite tool hasn't been used recently. If you're working on tasks that wo
                           if (fetchedCelebrities && fetchedCelebrities.length > 0) {
                             setCelebrities(fetchedCelebrities);
                           } else {
-                            setCelebrityError('No celebrity data received from Gemini API. The API might be unavailable or returned empty results.');
+                            setCelebrityError('No celebrity data received from OpenAI. The API might be unavailable or returned empty results.');
                           }
                         })
                         .catch(error => {
                           console.error('Failed to fetch celebrity insights:', error);
-                          setCelebrityError(`Failed to load celebrity data: ${error.message || 'Unknown error occurred'}. Please check your Gemini API key and try again.`);
+                          setCelebrityError(`Failed to load celebrity data: ${error.message || 'Unknown error occurred'}. Please check your OPENAI_API_KEY in the backend .env and try again.`);
                         })
                         .finally(() => {
                           setLoadingCelebrities(false);
@@ -614,7 +614,7 @@ The TodoWrite tool hasn't been used recently. If you're working on tasks that wo
               {loadingCelebrities ? (
                 <div className="flex flex-col items-center justify-center py-8 gap-2">
                   <Loader className="animate-spin text-pastel-accent" size={32} />
-                  <p className="text-xs text-pastel-muted">Fetching celebrity data from Gemini API...</p>
+                  <p className="text-xs text-pastel-muted">Fetching celebrity data from OpenAI…</p>
                 </div>
               ) : celebrityError ? (
                 <div className="flex flex-col items-center justify-center py-8 gap-2">
@@ -632,11 +632,11 @@ The TodoWrite tool hasn't been used recently. If you're working on tasks that wo
                             if (fetchedCelebrities && fetchedCelebrities.length > 0) {
                               setCelebrities(fetchedCelebrities);
                             } else {
-                              setCelebrityError('No celebrity data received from Gemini API. The API might be unavailable or returned empty results.');
+                              setCelebrityError('No celebrity data received from OpenAI. The API might be unavailable or returned empty results.');
                             }
                           })
                           .catch(error => {
-                            setCelebrityError(`Failed to load celebrity data: ${error.message || 'Unknown error occurred'}. Please check your Gemini API key and try again.`);
+                            setCelebrityError(`Failed to load celebrity data: ${error.message || 'Unknown error occurred'}. Please check your OPENAI_API_KEY in the backend .env and try again.`);
                           })
                           .finally(() => {
                             setLoadingCelebrities(false);
@@ -686,14 +686,14 @@ The TodoWrite tool hasn't been used recently. If you're working on tasks that wo
                   </div>
                   <p className="text-sm text-pastel-text text-center">No celebrity data loaded yet</p>
                   <p className="text-xs text-pastel-muted text-center max-w-md">
-                    Click "Load Celebrities" above to fetch trending celebrity fashion data from Gemini API
+                    Click "Load Celebrities" above to fetch trending celebrity fashion data from OpenAI Web Search
                   </p>
                 </div>
               )}
 
               <p className="text-xs text-pastel-muted text-center mt-4">
                 {celebrities.length > 0
-                  ? `✅ Successfully loaded ${Math.min(10, celebrities.length)} trending celebrities from Gemini API`
+                  ? `✅ Successfully loaded ${Math.min(10, celebrities.length)} trending celebrities from OpenAI`
                   : celebrityError
                     ? '❌ Failed to load celebrity data - see error message above'
                     : '⚡ Ready to load real-time celebrity fashion data'

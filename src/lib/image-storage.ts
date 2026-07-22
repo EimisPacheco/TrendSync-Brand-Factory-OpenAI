@@ -76,23 +76,61 @@ export async function uploadProductImage(
       storagePath += '.png';
     }
 
-    const { error } = await supabase.storage
-      .from(BUCKET)
-      .upload(storagePath, blob, {
-        upsert: true,
-        contentType: blob.type || 'image/png',
-      });
+    // Retry transient errors (504 Gateway Timeout, 502, 503, network blips,
+    // and the supabase-js "Unexpected token '<' is not valid JSON" path that
+    // shows up when Supabase returns an HTML error page instead of JSON).
+    const MAX_ATTEMPTS = 3;
+    const RETRYABLE_HTTP = new Set([502, 503, 504, 408, 429]);
+    const isHtmlAsJsonParseError = (msg: string) =>
+      msg.includes('Unexpected token') && /<\s*html|<\s*[a-zA-Z]/.test(msg);
 
-    if (error) {
-      console.error(`[image-storage] Upload failed for ${storagePath}:`, error.message);
+    let lastError: string | null = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const { error } = await supabase.storage
+        .from(BUCKET)
+        .upload(storagePath, blob, {
+          upsert: true,
+          contentType: blob.type || 'image/png',
+        });
+
+      if (!error) {
+        // Build permanent public URL on success
+        return `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${storagePath}`;
+      }
+
+      const msg = (error as { message?: string }).message || String(error);
+      const status = (error as { statusCode?: number | string }).statusCode;
+      const statusNum = typeof status === 'string' ? Number(status) : status;
+      const transient =
+        (typeof statusNum === 'number' && RETRYABLE_HTTP.has(statusNum)) ||
+        isHtmlAsJsonParseError(msg) ||
+        /timeout|timed out|fetch failed|network/i.test(msg);
+
+      lastError = `[${statusNum ?? '?'}] ${msg.slice(0, 200)}`;
+
+      if (transient && attempt < MAX_ATTEMPTS) {
+        const wait = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+        console.warn(
+          `[image-storage] Transient upload error on ${storagePath} ` +
+          `(attempt ${attempt}/${MAX_ATTEMPTS}): ${lastError} — retrying in ${wait}ms`,
+        );
+        await new Promise(r => setTimeout(r, wait));
+        continue;
+      }
+      // Non-retryable, or last attempt — bail out cleanly.
+      console.error(
+        `[image-storage] Upload failed for ${storagePath}: ${lastError}` +
+        (transient ? ' (transient — gave up after retries)' : ''),
+      );
       return null;
     }
 
-    // Build permanent public URL
-    const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}/${storagePath}`;
-    return publicUrl;
+    return null; // unreachable, satisfies TS
   } catch (err) {
-    console.error(`[image-storage] Upload error:`, err);
+    // Catches "Unexpected token '<' is not valid JSON" when supabase-js
+    // can't parse a 504 HTML page; treat as a transient upload failure.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[image-storage] Upload error for ${storagePath}: ${msg}`);
     return null;
   }
 }

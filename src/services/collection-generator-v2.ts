@@ -1,4 +1,3 @@
-import { BriaAPIService, buildProductPrompt, BriaAPIError } from './bria-api';
 import {
   brandStorage,
   brandStyleStorage,
@@ -16,10 +15,13 @@ import {
   CACHE_KEYS,
   CACHE_TTL,
   checkRateLimit,
-  hashObject,
 } from './redis';
-import { fetchTrends as apiFetchTrends, fetchCelebrities as apiFetchCelebrities } from '../lib/api-client';
-import { uploadProductImage, isSupabaseStorageUrl } from '../lib/image-storage';
+import {
+  fetchTrends as apiFetchTrends,
+  fetchCelebrities as apiFetchCelebrities,
+  generateImage as apiGenerateImage,
+} from '../lib/api-client';
+import { uploadProductImage } from '../lib/image-storage';
 import type { CollectionConfig } from '../components/collection';
 import type { CollectionItem, BrandStyleJSON, FIBOPromptJSON } from '../types/database';
 
@@ -90,14 +92,9 @@ interface ProductDefinition {
 const PRICE_TIERS = ['entry', 'mid', 'premium', 'luxury'] as const;
 
 export class CollectionGeneratorV2 {
-  private briaApi: BriaAPIService;
   private onProgress?: (progress: GenerationProgress) => void;
 
-  constructor(
-    briaApiKey: string,
-    onProgress?: (progress: GenerationProgress) => void
-  ) {
-    this.briaApi = new BriaAPIService({ apiKey: briaApiKey });
+  constructor(onProgress?: (progress: GenerationProgress) => void) {
     this.onProgress = onProgress;
   }
 
@@ -158,7 +155,7 @@ export class CollectionGeneratorV2 {
       });
       collectionId = collection.id;
 
-      this.updateProgress({ stage: 'trends', message: 'Analyzing market trends with Gemini...' });
+      this.updateProgress({ stage: 'trends', message: 'Analyzing market trends with OpenAI…' });
       const trendInsights = await this.getTrendInsights(config, logger);
       await trendInsightsStorage.save(collectionId, trendInsights as any, {
         region: config.region,
@@ -206,7 +203,7 @@ export class CollectionGeneratorV2 {
         total: items.length,
       });
 
-      const imageResults = await this.generateImagesWithValidation(items, brandStyle, logger);
+      const imageResults = await this.generateImagesWithValidation(items, brandStyle, brandId, logger);
 
       if (imageResults.failed.length > 0) {
         warnings.push(
@@ -267,7 +264,7 @@ export class CollectionGeneratorV2 {
     try {
       const cacheKey = isCelebrityBased
         ? `gemini:trend:celebrity:${config.demographic || 'unknown'}`
-        : CACHE_KEYS.GEMINI_TREND(
+        : CACHE_KEYS.OPENAI_TREND(
             config.season || 'unknown',
             config.region || 'unknown',
             config.demographic || 'unknown'
@@ -325,7 +322,7 @@ export class CollectionGeneratorV2 {
       }
 
       console.log('Saving trend insights to cache...');
-      await setCached(cacheKey, insights, CACHE_TTL.GEMINI_TRENDS);
+      await setCached(cacheKey, insights, CACHE_TTL.OPENAI_TRENDS);
 
       if (logger) {
         await logger.log('Cache Saved', { cacheKey }, 'info');
@@ -492,6 +489,7 @@ export class CollectionGeneratorV2 {
   private async generateImagesWithValidation(
     items: CollectionItem[],
     brandStyle: BrandStyleJSON,
+    brandId: string,
     logger?: GenerationLogger
   ): Promise<{ successful: CollectionItem[]; failed: Array<{ item: CollectionItem; error: Error }> }> {
     return await retryBatch(
@@ -503,7 +501,7 @@ export class CollectionGeneratorV2 {
           current: index + 1,
           total: items.length,
         });
-        await this.generateImageForItemWithValidation(item, brandStyle, logger);
+        await this.generateImageForItemWithValidation(item, brandStyle, brandId, logger);
       },
       {
         maxRetries: 3,
@@ -518,163 +516,77 @@ export class CollectionGeneratorV2 {
   private async generateImageForItemWithValidation(
     item: CollectionItem,
     brandStyle: BrandStyleJSON,
+    brandId: string,
     logger?: GenerationLogger
   ): Promise<void> {
     try {
       await collectionItemStorage.update(item.id, { status: 'designing' });
-
-      const focalLengthValue = Math.round(36 / (2 * Math.tan((brandStyle.cameraSettings.fovDefault * Math.PI / 180) / 2)));
-
-      const textPrompt = buildProductPrompt({
-        name: item.name,
-        category: item.category,
-        description: item.design_story,
-        colors: item.design_spec_json.colors.map(c => c.name),
-        materials: item.design_spec_json.materials.map(m => m.name),
-        style: item.design_spec_json.inspiration,
-        brandStandards: {
-          lightingIntensity: brandStyle.lightingConfig?.keyIntensity || 80,
-          colorTemperature: brandStyle.lightingConfig?.colorTemperature || 5500,
-          cameraAngle: brandStyle.cameraSettings?.angleDefault || 30,
-          focalLength: focalLengthValue,
-          negativePrompts: brandStyle.negativePrompts
-        }
-      });
-
       await collectionItemStorage.update(item.id, { status: 'generating' });
 
-      const promptHash = hashObject({ textPrompt, brandStyle });
-      const promptCacheKey = CACHE_KEYS.BRIA_STRUCTURED_PROMPT(promptHash);
+      const productDescription = [
+        item.name,
+        item.design_story,
+        `Colors: ${item.design_spec_json.colors.map(color => `${color.name} (${color.hex})`).join(', ')}`,
+        `Materials: ${item.design_spec_json.materials.map(material => material.name).join(', ')}`,
+        `Inspiration: ${item.design_spec_json.inspiration}`,
+      ].filter(Boolean).join('. ');
+      const result = await apiGenerateImage({
+        product_description: productDescription,
+        category: item.category,
+        brand_id: brandId,
+        brand_style: brandStyle,
+      });
+      const imageDataUrl = `data:image/png;base64,${result.image_base64}`;
+      const publicUrl = await uploadProductImage(
+        imageDataUrl,
+        `collections/${item.collection_id}/${item.sku}`,
+      );
+      const finalImageUrl = publicUrl || imageDataUrl;
+      const structuredPrompt: FIBOPromptJSON = {
+        description: productDescription,
+        objects: [{
+          name: item.name,
+          description: item.design_story,
+          attributes: {
+            category: item.category,
+            materials: item.design_spec_json.materials.map(material => material.name).join(', '),
+          },
+        }],
+        background: 'Clean white or very light gray e-commerce studio background',
+        lighting: 'Soft, even professional studio lighting',
+        aesthetics: item.design_spec_json.inspiration || 'Commercial fashion product photography',
+        composition: 'One complete product centered with generous padding',
+        color_scheme: item.design_spec_json.colors.map(color => `${color.name} (${color.hex})`).join(', '),
+        mood_atmosphere: 'Clean, polished, commercial',
+        depth_of_field: 'Sharp product detail',
+        focus: 'The product only',
+        camera_angle: 'Front-facing e-commerce view',
+        focal_length: '50mm',
+        aspect_ratio: '1:1',
+        negative_prompt: this.buildNegativePrompt(brandStyle),
+      };
+      const validation = validateFIBOPrompt(structuredPrompt, brandStyle);
+      await validationStorage.create({
+        collection_item_id: item.id,
+        compliance_score: validation.complianceScore,
+        violations: validation.violations as any,
+        auto_fixes_applied: [],
+        original_prompt_json: structuredPrompt as any,
+        fixed_prompt_json: structuredPrompt as any,
+      });
 
-      const cachedPrompt = await getCached<FIBOPromptJSON>(promptCacheKey);
-      let structuredPrompt: FIBOPromptJSON;
-      let imageUrl: string;
-
-      if (cachedPrompt) {
-        console.log(`Cache HIT for ${item.name} structured prompt`);
-        structuredPrompt = cachedPrompt;
-
-        if (logger) {
-          await logger.log('Bria Prompt Cache Hit', { promptCacheKey }, 'info');
-          await logger.logBriaPromptGeneration(item.name, textPrompt, cachedPrompt);
-        }
-
-        const brandNegatives = this.buildNegativePrompt(brandStyle);
-        if (structuredPrompt.negative_prompt) {
-          const existingNegatives = structuredPrompt.negative_prompt.split(',').map(s => s.trim());
-          const brandNegativesList = brandNegatives.split(',').map(s => s.trim());
-          const mergedNegatives = [...new Set([...existingNegatives, ...brandNegativesList])];
-          structuredPrompt.negative_prompt = mergedNegatives.join(', ');
-        } else {
-          structuredPrompt.negative_prompt = brandNegatives;
-        }
-
-        const imageResponse = await this.briaApi.generateImage({
-          structured_prompt: structuredPrompt,
-          aspect_ratio: this.getAspectRatio(item.category),
-          steps_num: 50,
-          guidance_scale: 5,
-          sync: true,
-        });
-
-        imageUrl = imageResponse.result_url || imageResponse.url || imageResponse.image_url || '';
-
-        if (!imageUrl) {
-          throw new BriaAPIError('No image URL returned from Bria image generation', 500);
-        }
-      } else {
-        console.log(`Cache MISS for ${item.name} - Generating new structured prompt`);
-
-        if (logger) {
-          await logger.logBriaPromptGeneration(item.name, textPrompt, null);
-        }
-
-        const result = await this.briaApi.generateWithStructuredPrompt(
-          textPrompt,
-          {
-            aspectRatio: this.getAspectRatio(item.category),
-            negativePrompt: this.buildNegativePrompt(brandStyle),
-            onStructuredPromptGenerated: async (promptData) => {
-              let prompt = promptData;
-              if (typeof promptData === 'string') {
-                try {
-                  prompt = JSON.parse(promptData);
-                } catch (e) {
-                  console.error('Failed to parse structured prompt:', e);
-                  return promptData;
-                }
-              }
-
-              const brandNegatives = this.buildNegativePrompt(brandStyle);
-              if (prompt.negative_prompt) {
-                const existingNegatives = prompt.negative_prompt.split(',').map(s => s.trim());
-                const brandNegativesList = brandNegatives.split(',').map(s => s.trim());
-                const mergedNegatives = [...new Set([...existingNegatives, ...brandNegativesList])];
-                prompt.negative_prompt = mergedNegatives.join(', ');
-              } else {
-                prompt.negative_prompt = brandNegatives;
-              }
-
-              const validation = validateFIBOPrompt(prompt, brandStyle);
-
-              if (logger) {
-                await logger.logBriaPromptGeneration(item.name, textPrompt, prompt);
-                await logger.logBrandValidation(item.name, validation, brandStyle);
-              }
-
-              await validationStorage.create({
-                collection_item_id: item.id,
-                compliance_score: validation.complianceScore,
-                violations: validation.violations as any,
-                auto_fixes_applied: [{
-                  violationId: 'negative-prompt-merge',
-                  field: 'negative_prompt',
-                  originalValue: (promptData as any).negative_prompt || '',
-                  fixedValue: prompt.negative_prompt,
-                  appliedAt: new Date().toISOString()
-                }] as any,
-                original_prompt_json: promptData as any,
-                fixed_prompt_json: prompt as any,
-              });
-
-              return prompt;
-            },
-          }
-        );
-
-        structuredPrompt = result.structuredPrompt;
-        imageUrl = result.imageUrl;
-
-        await setCached(promptCacheKey, structuredPrompt, CACHE_TTL.BRIA_PROMPTS);
-
-        if (logger) {
-          await logger.log('Bria Prompt Cached', { promptCacheKey }, 'info');
-        }
-      }
-
-      // Upload to Supabase Storage for permanent URL
-      let finalImageUrl = imageUrl;
-      if (imageUrl && !isSupabaseStorageUrl(imageUrl)) {
-        const storagePath = `collections/${item.collection_id}/${item.sku}`;
-        const publicUrl = await uploadProductImage(imageUrl, storagePath);
-        if (publicUrl) {
-          finalImageUrl = publicUrl;
-        }
-        // Falls back to Bria URL if upload fails
-      }
-
-      const validations = await validationStorage.getByItemId(item.id);
       await collectionItemStorage.update(item.id, {
         fibo_prompt_json: structuredPrompt as any,
         image_url: finalImageUrl,
-        brand_compliance_score: validations[0]?.compliance_score || 0,
+        brand_compliance_score: validation.complianceScore,
         status: 'complete',
       });
 
       console.log(`Generated image for ${item.name}: ${finalImageUrl}`);
 
       if (logger) {
-        await logger.logImageGeneration(item.name, imageUrl, 'bria-request-id');
+        await logger.log('GPT Image 2 Generation', { item: item.name, model: 'gpt-image-2' }, 'success');
+        await logger.logBrandValidation(item.name, validation, brandStyle);
       }
     } catch (error) {
       console.error(`Failed to generate image for ${item.name}:`, error);
@@ -685,14 +597,6 @@ export class CollectionGeneratorV2 {
 
       await collectionItemStorage.update(item.id, { status: 'failed' });
       throw error;
-    }
-  }
-
-  private getAspectRatio(category: string): string {
-    switch (category) {
-      case 'footwear': return '4:3';
-      case 'accessories': return '1:1';
-      default: return '4:5';
     }
   }
 

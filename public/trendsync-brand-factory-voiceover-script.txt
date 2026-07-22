@@ -1,0 +1,23 @@
+Imagine a fashion business that can move at the speed of culture — without sacrificing its identity, craftsmanship, or point of view.
+
+That is TrendSync Brand Factory.
+
+This is not another image generator, a disconnected trend report, or a static dashboard. It is a live, intelligent fashion studio: one connected workspace where real-time trend intelligence, brand strategy, design, production readiness, and campaign creation come together.
+
+And it is built as a true GPT and Codex hackathon project.
+
+Codex helped turn an ambitious product idea into a working application. It accelerated development: shaping the architecture, integrating AI workflows, refining the user experience, debugging complex voice and backend connections, and validating the build. Codex did not replace the team’s vision; it gave that vision momentum.
+
+At the core of TrendSync is a purposeful OpenAI model stack.
+
+GPT-5.6 Sol drives collection planning, technical packs, product direction, and campaign storyboards. GPT-5.6 Terra powers fast, web-grounded trend intelligence, turning cultural signals into actionable insight. GPT Image 2 generates and edits product visuals. GPT-Realtime 2.1 powers Lux, the live voice design companion, while GPT-4o mini Transcribe captures spoken intent. And Sora 2 Pro turns campaign concepts into cinematic video.
+
+Together, these models create a connected creative workflow. Trends inform the collection. The brand’s visual DNA guides every decision. Product imagery, materials, colors, validation, technical specifications, and campaign ideas stay in context — from the first spark to a story ready to make and market.
+
+For small and mid-sized fashion companies, that changes what is possible. The teams with the strongest ideas often have the fewest resources. They are asked to track trends, protect a brand, brief creatives, build collections, prepare specifications, and launch campaigns with fragmented tools, slow handoffs, and weeks of manual work.
+
+TrendSync gives those teams a genuine creative advantage. It reduces the distance between insight and execution. It helps founders and designers explore more directions, make better-informed decisions, and bring a concept from signal to sellable story with far less friction. It does not replace creative judgment; it gives creative people more time to use it.
+
+We have not seen this level of connected, end-to-end creative intelligence brought together in a live fashion workflow like this before. TrendSync is bold, useful, and built for real business impact.
+
+It deserves to win because it does not simply imagine the future of fashion creation. With GPT and Codex, it puts that future in the hands of the businesses building it today.

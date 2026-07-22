@@ -4,6 +4,7 @@ import type {
   BrandStyleJSON,
   Collection,
   CollectionItem,
+  CompanyModel,
   LoginAudit,
   TrendInsightsJSON,
   Validation,
@@ -261,7 +262,7 @@ export const trendInsightsStorage = {
         region: config?.region ?? '',
         season: config?.season ?? '',
         demographic: config?.demographic ?? '',
-        source: 'gemini',
+        source: 'openai-web-search',
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       });
     if (error) throw error;
@@ -301,6 +302,25 @@ export const validationStorage = {
     return data as Validation;
   },
 };
+
+// ---------- Company Models (shared roster across all brands) ----------
+
+export async function listCompanyModels(): Promise<CompanyModel[]> {
+  const { data, error } = await (supabase
+    .from('company_models') as any)
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as CompanyModel[];
+}
+
+export async function deleteCompanyModel(id: string): Promise<void> {
+  const { error } = await (supabase
+    .from('company_models') as any)
+    .delete()
+    .eq('id', id);
+  if (error) throw error;
+}
 
 export const loginAuditStorage = {
   async log(userId: string): Promise<void> {

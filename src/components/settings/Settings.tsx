@@ -31,7 +31,6 @@ function ApiCard({ name, configured, keyPreview, description }: ApiCardProps) {
 }
 
 export function Settings() {
-  const briaKey = import.meta.env.VITE_BRIA_API_KEY;
   const resendKey = import.meta.env.VITE_RESEND_API_KEY;
 
   return (
@@ -43,22 +42,28 @@ export function Settings() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <ApiCard
-            name="Bria API"
-            configured={!!briaKey && briaKey.length > 5}
-            keyPreview={briaKey ? briaKey.substring(0, 7) + '...' : undefined}
-            description="Used for FIBO image generation"
+            name="OpenAI Web Search"
+            configured={true}
+            keyPreview="OpenAI key (.env)"
+            description="Used for real-time trend & celebrity analysis via OpenAI Responses API"
           />
           <ApiCard
-            name="Google Search"
+            name="OpenAI API"
             configured={true}
-            keyPreview="Vertex AI"
-            description="Used for real-time trend analysis via Gemini grounding"
+            keyPreview="OpenAI key (.env)"
+            description="Used for chat (Lux), tech pack generation, and ad-video storyboards"
           />
           <ApiCard
-            name="Gemini API"
+            name="OpenAI GPT Image 2"
             configured={true}
-            keyPreview="Vertex AI"
-            description="Used for tech pack generation & adjustments"
+            keyPreview="OpenAI key (.env)"
+            description="Used server-side for product generation, natural-language edits, and model+item composites"
+          />
+          <ApiCard
+            name="Fal · Grok Imagine"
+            configured={true}
+            keyPreview="Fal key (.env)"
+            description="Used for image-to-video advertisement rendering"
           />
           <ApiCard
             name="Resend API"

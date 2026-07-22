@@ -22,12 +22,12 @@ async function apiFetch<T = unknown>(
     throw new Error(`API ${res.status}: ${text}`);
   }
 
-  // Log with color coding: fast (<200ms) = likely cached, slow = fresh Gemini call
+  // Log with color coding: fast (<200ms) = likely cached, slow = fresh upstream call
   const isFast = elapsed < 200;
   const style = isFast
     ? "color: #22c55e; font-weight: bold"   // green = from Redis
-    : "color: #f59e0b; font-weight: bold";  // amber = fresh API call
-  const source = isFast ? "⚡ Redis cache" : "🔄 Gemini API";
+    : "color: #f59e0b; font-weight: bold";  // amber = fresh upstream call
+  const source = isFast ? "⚡ Redis cache" : "🔄 Upstream API";
   console.log(`%c[API] ${source} — ${options?.method || "GET"} ${path} (${elapsed}ms)`, style);
 
   return res.json();
@@ -134,6 +134,7 @@ export async function generateImage(params: {
   product_description: string;
   category: string;
   brand_id?: string;
+  brand_style?: Record<string, unknown>;
   trend_colors?: Record<string, unknown>[];
   trend_materials?: Record<string, unknown>[];
 }) {
@@ -264,6 +265,7 @@ export async function startAdVideoGeneration(params: {
   product_image_base64?: string;
   campaign_brief?: string;
   ad_style?: string;
+  model_id?: string | null;
 }) {
   return apiFetch<{ success: boolean; ad_id: string; status: string }>(
     "/generate-ad-video",
@@ -281,6 +283,9 @@ export async function startProductVideo(params: {
   product: Record<string, unknown>;
   brand_id: string;
   image_base64?: string;
+  model_id?: string | null;
+  model_image_url?: string | null;
+  duration_seconds?: number;
 }) {
   return apiFetch<{ success: boolean; video_id: string; status: string }>(
     "/generate-product-video",
@@ -400,6 +405,61 @@ export async function generateTechPackPDF(params: {
     pdf_base64: string;
     techpack: Record<string, unknown>;
   }>("/generate-techpack-pdf", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function generateTechPackDOCX(params: {
+  product: Record<string, unknown>;
+  techpack?: Record<string, unknown>;
+  brand_name?: string;
+}) {
+  return apiFetch<{
+    success: boolean;
+    docx_base64: string;
+    techpack: Record<string, unknown>;
+  }>("/generate-techpack-docx", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function sendTechPackToMiro(params: {
+  product: Record<string, unknown>;
+  techpack?: Record<string, unknown>;
+  brand_name?: string;
+  miro_url?: string;
+  board_id?: string;
+  x?: number;
+  y?: number;
+}) {
+  return apiFetch<{
+    success: boolean;
+    board_id: string;
+    item_id: string;
+    doc_url: string;
+  }>("/send-techpack-to-miro", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function createTechPackMiroBoard(params: {
+  product: Record<string, unknown>;
+  techpack?: Record<string, unknown>;
+  brand_name?: string;
+  board_name?: string;
+  x?: number;
+  y?: number;
+}) {
+  return apiFetch<{
+    success: boolean;
+    board_id: string;
+    board_url: string;
+    item_id: string;
+    doc_url: string;
+  }>("/create-techpack-miro-board", {
     method: "POST",
     body: JSON.stringify(params),
   });

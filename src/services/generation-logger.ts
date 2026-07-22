@@ -78,13 +78,14 @@ export class GenerationLogger {
   }
 
   public async logGeminiTrendRequest(prompt: string) {
-    await this.logSection('Step 1: Gemini + Google Search - Trend Analysis');
-    await this.log('Gemini Trend Request', { prompt }, 'info');
+    // Method name kept for backward compat; the underlying provider is now OpenAI.
+    await this.logSection('Step 1: OpenAI + Web Search - Trend Analysis');
+    await this.log('OpenAI Trend Request', { prompt }, 'info');
   }
 
   public async logGeminiTrendResponse(response: any, parsed: any) {
-    await this.log('Gemini Raw Response', response, 'info');
-    await this.log('Gemini Parsed Data', parsed, 'success');
+    await this.log('OpenAI Raw Response', response, 'info');
+    await this.log('OpenAI Parsed Data', parsed, 'success');
   }
 
   public async logProductCreation(products: any[]) {
@@ -100,9 +101,9 @@ export class GenerationLogger {
     }, 'success');
   }
 
-  public async logBriaPromptGeneration(itemName: string, textPrompt: string, structuredPrompt: any) {
-    await this.logSection(`Step 3: Bria API - ${itemName}`);
-    await this.log('Text Prompt Sent to Bria', textPrompt, 'info');
+  public async logImagePromptGeneration(itemName: string, textPrompt: string, structuredPrompt: any) {
+    await this.logSection(`Step 3: GPT Image 2 - ${itemName}`);
+    await this.log('Text Prompt Sent to GPT Image 2', textPrompt, 'info');
     if (structuredPrompt) {
       await this.log('Structured FIBO Prompt Received', structuredPrompt, 'success');
     }
@@ -134,7 +135,7 @@ export class GenerationLogger {
     await this.log(`Image Generated - ${itemName}`, {
       url: imageUrl,
       requestId: requestId,
-      source: 'Bria API v2'
+      source: 'GPT Image 2'
     }, 'success');
   }
 

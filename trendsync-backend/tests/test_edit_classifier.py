@@ -1,5 +1,5 @@
 """
-Regression guard for the surgical-vs-global edit classifier in
+Regression guard for the surgical-vs-global edit classifier used by
 shared/image_generator.py edit_product_image.
 
 The bug: Lux (the OpenAI Agents SDK design companion) rephrases the user's
@@ -7,9 +7,8 @@ instruction before calling the edit_product_image tool. The original
 classifier only recognised "from X to Y" / "swap X for Y" / "replace the X"
 as surgical signals. Lux's rephrasings ("change all off-white areas to black
 while preserving the red upper", "specifically the sole/midsole", etc.)
-matched none of those, so the classifier defaulted to GLOBAL recolor — and
-Gemini correctly obeyed the resulting "recolor everything" prompt. The whole
-shoe came back black.
+matched none of those, so the classifier defaulted to GLOBAL recolor. The
+whole shoe came back black.
 
 The fix:
   • Expand surgical_markers to include preservation/scope language
@@ -22,7 +21,7 @@ The fix:
     "leave everything else intact" stay surgical even though they contain
     the word "everything".
 
-Both the text agent (Lux) and the voice agent (gpt-realtime) feed
+Both the text agent (Lux) and the voice agent (gpt-realtime-2.1) feed
 edit_instruction into the same classifier via /edit-image and
 shared.image_generator.edit_product_image, so this test guards both paths.
 
@@ -31,46 +30,7 @@ Run with: pytest trendsync-backend/tests/test_edit_classifier.py
 
 from __future__ import annotations
 
-import re
-
-# ----- Mirror of the live classifier (kept in sync with image_generator.py) ---
-
-COLOR_KEYWORDS = [
-    "color", "colour", "red", "blue", "green", "black", "white", "pink",
-    "yellow", "orange", "purple", "navy", "teal", "gold", "silver",
-    "beige", "cream", "brown", "gray", "grey", "burgundy", "maroon",
-    "coral", "lavender", "olive", "turquoise", "magenta", "crimson",
-]
-
-SURGICAL_MARKERS = [
-    " from ", "swap ", "replace the ", "instead of",
-    "preserv", "while keep", "keep the ", "keeping the ",
-    "intact", "untouched", "unchanged", "leave ",
-    " areas ", "areas of", "specifically",
-]
-
-_COLOR_NAMES = (
-    r"red|blue|green|black|white|pink|yellow|orange|purple|navy|teal|"
-    r"gold|silver|beige|cream|brown|gray|grey|burgundy|maroon|coral|"
-    r"lavender|olive|turquoise|magenta|crimson|off[\s-]?white"
-)
-_TWO_COLOR_RE = re.compile(
-    rf"\b({_COLOR_NAMES})\b[\s\S]{{0,40}}?\b(to|into|with|for)\s+\b({_COLOR_NAMES})\b"
-)
-
-
-def classify(instr: str) -> str:
-    """Returns 'GLOBAL', 'SURGICAL', or 'OTHER'."""
-    s = instr.lower()
-    is_color = any(kw in s for kw in COLOR_KEYWORDS)
-    has_surgical_marker = any(m in s for m in SURGICAL_MARKERS)
-    has_two_color_swap = bool(_TWO_COLOR_RE.search(s))
-    surgical_signal = has_surgical_marker or has_two_color_swap
-    if is_color and not surgical_signal:
-        return "GLOBAL"
-    if is_color:
-        return "SURGICAL"
-    return "OTHER"
+from shared.image_generator import _classify_edit_instruction
 
 
 # ----- Tests ----------------------------------------------------------------
@@ -115,7 +75,7 @@ CASES = [
 def test_each_case():
     failures = []
     for instr, want, source in CASES:
-        got = classify(instr)
+        got = _classify_edit_instruction(instr).upper()
         if got != want:
             failures.append((source, want, got, instr))
     assert not failures, (

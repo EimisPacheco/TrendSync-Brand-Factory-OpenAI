@@ -11,10 +11,10 @@ interface PipelineRunnerProps {
 }
 
 const STEPS = [
-  { key: 'trends', label: 'Trend Analysis', description: 'Analyzing real-time fashion trends with Google Search', icon: <Search size={16} /> },
-  { key: 'collection', label: 'Collection Planning', description: 'Generating collection plan with Gemini 3 Pro thinking', icon: <Palette size={16} /> },
-  { key: 'images', label: 'Image Generation', description: 'Creating product images with Gemini 3 Pro Image', icon: <Image size={16} /> },
-  { key: 'video', label: 'Product Videos', description: 'Per-product showcase videos with Veo 3.1', icon: <Video size={16} /> },
+  { key: 'trends', label: 'Trend Analysis', description: 'Analyzing real-time fashion trends with OpenAI Web Search', icon: <Search size={16} /> },
+  { key: 'collection', label: 'Collection Planning', description: 'Generating collection plan with OpenAI GPT-5.6 Sol', icon: <Palette size={16} /> },
+  { key: 'images', label: 'Image Generation', description: 'Creating product images with GPT Image 2', icon: <Image size={16} /> },
+  { key: 'video', label: 'Product Videos', description: 'Per-product showcase videos with Fal · Grok Imagine', icon: <Video size={16} /> },
 ];
 
 export function PipelineRunner({ config, disabled, onComplete }: PipelineRunnerProps) {

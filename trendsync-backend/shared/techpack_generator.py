@@ -1,22 +1,19 @@
 """
 Tech Pack Generator
-Uses Gemini 3 Pro to generate detailed technical specifications for fashion products.
+Uses OpenAI GPT-5.6 Sol (Responses API) to generate detailed technical specifications for fashion products.
 """
 
 import json
 import os
 from typing import Any, Dict
-from google import genai
-from google.genai import types
+
+from openai import OpenAI
+
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-sol")
 
 
-GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-3-pro-preview")
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
-
-
-def get_client() -> genai.Client:
-    return genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
+def get_client() -> OpenAI:
+    return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 
 DEFAULT_TECHPACK = {
@@ -137,8 +134,7 @@ def _build_default_techpack(product: Dict[str, Any]) -> Dict[str, Any]:
 
 def generate_techpack(product: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Generate a full tech pack for a fashion product using Gemini 3 Pro.
-    Uses LOW thinking level — straightforward structured output.
+    Generate a full tech pack for a fashion product using OpenAI GPT-5.6 Sol.
     """
     client = get_client()
 
@@ -214,19 +210,13 @@ Generate a comprehensive tech pack JSON with these sections:
 Be realistic and detailed. Base measurements on the category and target demographic."""
 
     try:
-        response = client.models.generate_content(
-            model=GEMINI_PRO_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(
-                    thinking_level=types.ThinkingLevel.LOW,
-                    include_thoughts=False,
-                ),
-                response_mime_type="application/json",
-            ),
+        response = client.responses.create(
+            model=OPENAI_MODEL,
+            input=prompt,
         )
+        raw_text = response.output_text
 
-        techpack = json.loads(response.text)
+        techpack = json.loads(raw_text)
         if isinstance(techpack, list) and len(techpack) > 0:
             techpack = techpack[0]
         return techpack

@@ -79,19 +79,19 @@ export function TrendInsightsView() {
       const transformedInsights: TrendInsightsJSON = {
         colors: (data.colors || []).map(c => ({
           ...c,
-          sources: ['Gemini + Google Search'],
+          sources: ['OpenAI + Web Search'],
         })),
         silhouettes: (data.silhouettes || []).map(s => ({
           ...s,
-          sources: ['Gemini + Google Search'],
+          sources: ['OpenAI + Web Search'],
         })),
         materials: (data.materials || []).map(m => ({
           ...m,
-          sources: ['Gemini + Google Search'],
+          sources: ['OpenAI + Web Search'],
         })),
         themes: (data.themes || []).map(t => ({
           ...t,
-          sources: ['Gemini + Google Search'],
+          sources: ['OpenAI + Web Search'],
         })),
         summary: data.summary || '',
       };
@@ -120,10 +120,10 @@ export function TrendInsightsView() {
 
       const data = trendRes.insights;
       const transformedInsights: TrendInsightsJSON = {
-        colors: (data.colors || []).map(c => ({ ...c, sources: ['Gemini + Google Search'] })),
-        silhouettes: (data.silhouettes || []).map(s => ({ ...s, sources: ['Gemini + Google Search'] })),
-        materials: (data.materials || []).map(m => ({ ...m, sources: ['Gemini + Google Search'] })),
-        themes: (data.themes || []).map(t => ({ ...t, sources: ['Gemini + Google Search'] })),
+        colors: (data.colors || []).map(c => ({ ...c, sources: ['OpenAI + Web Search'] })),
+        silhouettes: (data.silhouettes || []).map(s => ({ ...s, sources: ['OpenAI + Web Search'] })),
+        materials: (data.materials || []).map(m => ({ ...m, sources: ['OpenAI + Web Search'] })),
+        themes: (data.themes || []).map(t => ({ ...t, sources: ['OpenAI + Web Search'] })),
         summary: data.summary || '',
       };
 
@@ -201,7 +201,7 @@ export function TrendInsightsView() {
           </h2>
         </div>
         <p className="text-pastel-text text-xl">
-          Discover real-time fashion trends powered by Gemini AI + Google Search
+          Discover real-time fashion trends powered by OpenAI + Web Search
         </p>
       </div>
 

@@ -247,7 +247,7 @@ export function AuthPage() {
         </div>
 
         <p className="text-center text-xs text-pastel-muted mt-6">
-          Powered by Supabase Auth & Gemini AI
+          Powered by Supabase Auth & OpenAI
         </p>
       </div>
     </div>

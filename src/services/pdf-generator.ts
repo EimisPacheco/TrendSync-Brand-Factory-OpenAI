@@ -7,8 +7,11 @@
 
 import type { TechPack } from './techpack-generator';
 import type { CollectionItem } from '../types/database';
-import { generateTechPackPDF as apiGenerateTechPackPDF } from '../lib/api-client';
-import { techPackGenerator } from './techpack-generator';
+import {
+  generateTechPackPDF as apiGenerateTechPackPDF,
+  generateTechPackDOCX as apiGenerateTechPackDOCX,
+  createTechPackMiroBoard as apiCreateTechPackMiroBoard,
+} from '../lib/api-client';
 
 function base64ToBlob(base64: string, mimeType = 'application/pdf'): Blob {
   const binaryString = atob(base64);
@@ -20,25 +23,8 @@ function base64ToBlob(base64: string, mimeType = 'application/pdf'): Blob {
 }
 
 export class PDFGenerator {
-  /**
-   * Generate a professional tech pack PDF via Foxit API (server-side).
-   * Requires the tech pack to be saved in the DB first.
-   * Returns a Blob of the PDF.
-   */
-  public async generateTechPackPDF(
-    item: CollectionItem,
-    techPack: TechPack,
-    brandName?: string,
-  ): Promise<Blob> {
-    // Check that techpack has been saved to DB
-    if (!item.techpack_generated || !item.techpack_json) {
-      throw new Error('Tech pack has not been generated yet. Please go to the Tech Pack tab first.');
-    }
-
-    // Convert TechPack to raw JSON for the backend
-    const rawTechpack = item.techpack_json;
-
-    const result = await apiGenerateTechPackPDF({
+  private buildPayload(item: CollectionItem) {
+    return {
       product: {
         name: item.name,
         sku: item.sku,
@@ -63,6 +49,7 @@ export class PDFGenerator {
               typeof c === 'string' ? c : `${c.name} (${c.hex})`,
             )
             .join(', ') || '',
+        color_palette: item.design_spec_json?.colors || [],
         season: item.design_spec_json?.season || '',
         silhouette: item.design_spec_json?.silhouette || '',
         fit: item.design_spec_json?.fit || '',
@@ -70,12 +57,65 @@ export class PDFGenerator {
         details: item.design_spec_json?.details || [],
         inspiration: item.design_spec_json?.inspiration || '',
         design_story: item.design_story || '',
+        image_url: item.image_url || '',
+        video_url: item.video_url || '',
       },
-      techpack: rawTechpack,
+      techpack: item.techpack_json,
+    };
+  }
+
+  private assertTechPackSaved(item: CollectionItem) {
+    if (!item.techpack_generated || !item.techpack_json) {
+      throw new Error('Tech pack has not been generated yet. Please go to the Tech Pack tab first.');
+    }
+  }
+
+  /**
+   * Generate a professional tech pack PDF via Foxit API (server-side).
+   * Requires the tech pack to be saved in the DB first.
+   * Returns a Blob of the PDF.
+   */
+  public async generateTechPackPDF(
+    item: CollectionItem,
+    techPack: TechPack,
+    brandName?: string,
+  ): Promise<Blob> {
+    void techPack;
+    this.assertTechPackSaved(item);
+
+    const payload = this.buildPayload(item);
+    const result = await apiGenerateTechPackPDF({
+      product: payload.product,
+      techpack: payload.techpack || undefined,
       brand_name: brandName || '',
     });
 
     return base64ToBlob(result.pdf_base64);
+  }
+
+  /**
+   * Generate a professional tech pack DOCX using the same source payload as PDF.
+   * Returns a Blob of the DOCX.
+   */
+  public async generateTechPackDOCX(
+    item: CollectionItem,
+    techPack: TechPack,
+    brandName?: string,
+  ): Promise<Blob> {
+    void techPack;
+    this.assertTechPackSaved(item);
+
+    const payload = this.buildPayload(item);
+    const result = await apiGenerateTechPackDOCX({
+      product: payload.product,
+      techpack: payload.techpack || undefined,
+      brand_name: brandName || '',
+    });
+
+    return base64ToBlob(
+      result.docx_base64,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
   }
 
   /**
@@ -99,6 +139,59 @@ export class PDFGenerator {
     URL.revokeObjectURL(url);
 
     return fileName;
+  }
+
+  /**
+   * Download the tech pack DOCX to the user's device.
+   */
+  public async downloadDOCX(
+    item: CollectionItem,
+    techPack: TechPack,
+    brandName?: string,
+  ): Promise<string> {
+    const blob = await this.generateTechPackDOCX(item, techPack, brandName);
+    const fileName = `tech-pack-${item.sku}-${new Date().toISOString().split('T')[0]}.docx`;
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    return fileName;
+  }
+
+  /**
+   * Create a new Miro board for the tech pack and email the board link.
+   */
+  public async sendToMiro(
+    item: CollectionItem,
+    techPack: TechPack,
+    boardName?: string,
+    brandName?: string,
+  ): Promise<{ boardId: string; boardUrl: string; itemId: string; docUrl: string }> {
+    void techPack;
+    this.assertTechPackSaved(item);
+
+    const payload = this.buildPayload(item);
+    const result = await apiCreateTechPackMiroBoard({
+      product: payload.product,
+      techpack: payload.techpack || undefined,
+      brand_name: brandName || '',
+      board_name: boardName || '',
+      x: 0,
+      y: 0,
+    });
+
+    return {
+      boardId: result.board_id,
+      boardUrl: result.board_url,
+      itemId: result.item_id,
+      docUrl: result.doc_url,
+    };
   }
 }
 

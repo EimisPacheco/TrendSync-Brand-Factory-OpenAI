@@ -36,15 +36,15 @@ def run_full_pipeline(
     Steps:
         1. Fetch trend insights (Gemini Flash + Google Search)
         2. Generate collection plan (Gemini Pro with thinking)
-        3. Generate product images (Gemini Flash Image, sequential)
-        4. Generate ad video for hero product (optional, Veo 3.1)
+        3. Generate product images (GPT Image 2, sequential)
+        4. Generate an ad video for the hero product (optional, Fal)
 
     Args:
         config: Collection config dict (season, region, demographic, categories, product_count, trend_source)
         brand_style: Brand style dict (colorPalette, lightingConfig, cameraSettings, negativePrompts)
         status_callback: fn(step, message, data) called at each transition
         upload_fn: Optional fn(base64, object_name) → URL for GCS uploads
-        generate_ad_video: Whether to run Step 4 (Veo video generation)
+        generate_ad_video: Whether to run Step 4 (Fal video generation)
 
     Returns:
         Dict with trend_insights, collection, product_count, ad_video (if requested)

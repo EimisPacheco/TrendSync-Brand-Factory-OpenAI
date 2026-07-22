@@ -1,17 +1,18 @@
 """
 TrendSync Video Generation Service
-Generates product advertisement videos using Veo 3.1.
-Follows the same pattern as Imaginable's veo-service/main.py.
+Generates product advertisement videos with OpenAI Sora 2.
 Port 8001.
 """
 
 import os
 import time
 import base64
+import io
 import tempfile
 import subprocess
 import uuid
 import logging
+import shutil
 from typing import Any, Dict, List, Optional
 
 try:
@@ -20,13 +21,17 @@ try:
 except Exception:
     pass
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from google import genai
-from google.genai import types
-from google.genai.types import VideoGenerationReferenceImage
-from google.cloud import storage
+
+try:
+    from google.cloud import storage  # type: ignore
+    _GCS_AVAILABLE = True
+except Exception:
+    storage = None  # type: ignore
+    _GCS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -36,9 +41,18 @@ logging.basicConfig(level=logging.INFO)
 # --------------------------------------------------------------------------
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_REGION", "us-central1")
 BUCKET_NAME = os.environ.get("GCS_BUCKET", "trendsync-brand-factory-media")
-VIDEO_MODEL = os.environ.get("VEO_MODEL", "veo-3.1-generate-preview")
+# GCS may live in a different GCP project / SA than Vertex.
+GCS_PROJECT = os.environ.get("GCS_PROJECT", PROJECT_ID)
+GCS_CREDENTIALS_PATH = os.environ.get("GCS_CREDENTIALS")
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+SORA_VIDEO_MODEL = os.environ.get("OPENAI_VIDEO_MODEL", "sora-2-pro")
+OPENAI_VIDEO_API = "https://api.openai.com/v1/videos"
+
+# Polling config
+POLL_INTERVAL_SECONDS = 10
+MAX_POLL_SECONDS = 15 * 60  # Sora renders can take several minutes.
 
 DEFAULT_NEGATIVE_PROMPT = (
     "logos, watermarks, text overlays, low quality, blurry, "
@@ -89,6 +103,8 @@ class GenerateAdRequest(BaseModel):
     scenes: List[AdScene]
     duration_seconds: int = 8
     aspect_ratio: str = "16:9"
+    # Retained for clients of the old video API. Sora audio is prompt-driven;
+    # this value does not alter the Videos API request.
     generate_audio: bool = True
     style_reference_image_base64: Optional[str] = None
 
@@ -108,37 +124,31 @@ def get_public_url(bucket_name: str, blob_name: str) -> str:
     return f"https://storage.googleapis.com/{bucket_name}/{blob_name}"
 
 
-def gcs_object_name_from_uri(gcs_uri: str) -> str:
-    gs_prefix = f"gs://{BUCKET_NAME}/"
-    if gcs_uri.startswith(gs_prefix):
-        return gcs_uri[len(gs_prefix):]
-    https_prefix = f"https://storage.googleapis.com/{BUCKET_NAME}/"
-    if gcs_uri.startswith(https_prefix):
-        return gcs_uri[len(https_prefix):].split("?")[0]
-    raise ValueError(f"Unexpected GCS URI format: {gcs_uri[:100]}")
-
-
-def download_gcs_file(gcs_uri: str, local_path: str) -> None:
-    client = storage.Client(project=PROJECT_ID)
-    bucket_name, blob_path = gcs_uri.replace("gs://", "").split("/", 1)
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_path)
-    blob.download_to_filename(local_path)
-
-
 def upload_to_gcs(local_path: str, object_name: str) -> str:
-    client = storage.Client(project=PROJECT_ID)
+    if not _GCS_AVAILABLE:
+        raise RuntimeError("google-cloud-storage not installed")
+    # Prefer GCS-specific credentials (different SA / project than Vertex).
+    creds_path = GCS_CREDENTIALS_PATH or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if creds_path and os.path.exists(creds_path):
+        from google.oauth2 import service_account
+        credentials = service_account.Credentials.from_service_account_file(creds_path)
+        client = storage.Client(project=GCS_PROJECT, credentials=credentials)
+    else:
+        client = storage.Client(project=GCS_PROJECT)
     bucket = client.bucket(BUCKET_NAME)
     blob = bucket.blob(object_name)
     blob.upload_from_filename(local_path)
     return f"gs://{BUCKET_NAME}/{object_name}"
 
 
-import shutil
-FFMPEG_PATH = os.environ.get("FFMPEG_PATH", shutil.which("ffmpeg") or "/usr/bin/ffmpeg")
+FFMPEG_PATH = os.environ.get(
+    "FFMPEG_PATH",
+    shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg",
+)
 
 
 def stitch_videos(video_paths: List[str], output_path: str) -> None:
+    """FFmpeg concat-demuxer stitch (assumes uniform codec/container)."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         concat_file = f.name
         for path in video_paths:
@@ -157,7 +167,178 @@ def build_prompt(scene_prompt: str, dialogue: Optional[str]) -> str:
     if dialogue:
         parts.append(f'Spoken voiceover: "{dialogue}"')
         parts.append(f"Voice style: {GLOBAL_VOICE_PROMPT}")
+    parts.append(f"Avoid: {DEFAULT_NEGATIVE_PROMPT}")
     return "\n".join(parts)
+
+
+def _openai_headers() -> Dict[str, str]:
+    if not OPENAI_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY environment variable is not set",
+        )
+    return {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+    }
+
+
+def _sora_size_for_aspect_ratio(aspect_ratio: str) -> str:
+    """Return a supported Sora render size for the requested orientation."""
+    if aspect_ratio == "9:16":
+        return "720x1280"
+    if aspect_ratio == "1:1":
+        # Sora has no square output. Use a portrait social-video crop for
+        # square product photography rather than submitting an invalid size.
+        return "720x1280"
+    return "1280x720"
+
+
+def _reference_image_file(image_base64: str, size: str) -> io.BytesIO:
+    """Normalize an input reference to the exact Sora output dimensions."""
+    try:
+        from PIL import Image, ImageOps
+        raw = image_base64.split(",", 1)[1] if image_base64.startswith("data:") else image_base64
+        image = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+        width, height = (int(value) for value in size.split("x"))
+        # Crop to Sora's exact required dimensions without stretching the
+        # garment or changing its proportions.
+        image = ImageOps.fit(image, (width, height), method=Image.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=95)
+        output.seek(0)
+        output.name = "product-reference.jpg"
+        return output
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Invalid style reference image: {error}") from error
+
+
+def _sora_generate_scene_video(
+    scene_index: int,
+    total_scenes: int,
+    prompt: str,
+    image_base64: Optional[str],
+    duration_seconds: int,
+    aspect_ratio: str,
+) -> bytes:
+    """Create, poll, and download one image-guided Sora video."""
+    if not image_base64:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Scene {scene_index + 1}: Sora image-to-video requires style_reference_image_base64.",
+        )
+
+    size = _sora_size_for_aspect_ratio(aspect_ratio)
+    seconds = duration_seconds
+    reference = _reference_image_file(image_base64, size)
+    data = {
+        "model": SORA_VIDEO_MODEL,
+        "prompt": prompt,
+        "size": size,
+        "seconds": str(seconds),
+    }
+    files = {"input_reference": ("product-reference.jpg", reference, "image/jpeg")}
+    print(
+        f"[SoraVideo] scene {scene_index + 1}/{total_scenes} submitting to {SORA_VIDEO_MODEL} "
+        f"(size={size}, duration={seconds}s)"
+    )
+    submit_resp = requests.post(
+        OPENAI_VIDEO_API,
+        data=data,
+        files=files,
+        headers=_openai_headers(),
+        timeout=90,
+    )
+    if submit_resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Scene {scene_index + 1}: Sora submit failed "
+                f"({submit_resp.status_code}): {submit_resp.text[:500]}"
+            ),
+        )
+
+    submit_json = submit_resp.json()
+    video_id = submit_json.get("id")
+    if not video_id:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Scene {scene_index + 1}: Sora submit response missing id: "
+                f"{submit_json}"
+            ),
+        )
+
+    print(f"[SoraVideo] scene {scene_index + 1}/{total_scenes} queued id={video_id}")
+    deadline = time.time() + MAX_POLL_SECONDS
+    last_status: Optional[str] = None
+    while time.time() < deadline:
+        time.sleep(POLL_INTERVAL_SECONDS)
+        try:
+            status_resp = requests.get(
+                f"{OPENAI_VIDEO_API}/{video_id}", headers=_openai_headers(), timeout=60
+            )
+        except requests.RequestException as error:
+            # A video job continues server-side when a status request has a
+            # transient network timeout. Keep polling until the overall render
+            # deadline instead of failing a completed or nearly-complete job.
+            logger.warning(
+                "[SoraVideo] scene %s/%s status poll transiently failed: %s",
+                scene_index + 1,
+                total_scenes,
+                error,
+            )
+            continue
+        if status_resp.status_code in {429, 500, 502, 503, 504}:
+            logger.warning(
+                "[SoraVideo] scene %s/%s status poll returned %s; retrying",
+                scene_index + 1,
+                total_scenes,
+                status_resp.status_code,
+            )
+            continue
+        if status_resp.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Scene {scene_index + 1}: Sora status poll failed "
+                    f"({status_resp.status_code}): {status_resp.text[:500]}"
+                ),
+            )
+        status_json = status_resp.json()
+        status = (status_json.get("status") or "").lower()
+        if status != last_status:
+            print(f"[SoraVideo] scene {scene_index + 1}/{total_scenes} status={status}")
+            last_status = status
+
+        if status == "completed":
+            break
+        if status in {"failed", "error", "canceled", "cancelled"}:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Scene {scene_index + 1}: Sora job ended with status={status}: "
+                    f"{str(status_json)[:500]}"
+                ),
+            )
+    else:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Scene {scene_index + 1}: Sora job timed out after {MAX_POLL_SECONDS}s",
+        )
+
+    download_resp = requests.get(
+        f"{OPENAI_VIDEO_API}/{video_id}/content", headers=_openai_headers(), timeout=300
+    )
+    if download_resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Scene {scene_index + 1}: Sora video download failed "
+                f"({download_resp.status_code})"
+            ),
+        )
+
+    return download_resp.content
 
 
 # --------------------------------------------------------------------------
@@ -166,147 +347,90 @@ def build_prompt(scene_prompt: str, dialogue: Optional[str]) -> str:
 
 @app.post("/generate-ad", response_model=GenerateAdResponse)
 async def generate_ad(req: GenerateAdRequest) -> Dict[str, Any]:
-    """Generate a multi-scene advertisement video using Veo 3.1."""
+    """Generate a multi-scene advertisement video using OpenAI Sora."""
 
-    logger.info(f"[VEO] Generating ad with {len(req.scenes)} scenes")
+    logger.info(f"[SoraVideo] Generating ad with {len(req.scenes)} scenes")
 
     if len(req.scenes) <= 0:
         raise HTTPException(status_code=400, detail="At least 1 scene required.")
+    if req.duration_seconds not in {4, 8, 12, 16, 20}:
+        raise HTTPException(
+            status_code=422,
+            detail="Sora supports video durations of 4, 8, 12, 16, or 20 seconds.",
+        )
 
-    client = genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
     ad_id = f"ad_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-    scene_gcs_uris: List[str] = []
     local_video_files: List[str] = []
 
-    # Asset reference (product image)
-    asset_reference_config = None
-    temp_asset_path = None
-    if req.style_reference_image_base64:
-        asset_bytes = base64.b64decode(req.style_reference_image_base64)
-        fd, temp_asset_path = tempfile.mkstemp(suffix="_asset.png")
-        with os.fdopen(fd, "wb") as tmp:
-            tmp.write(asset_bytes)
-        asset_reference_config = VideoGenerationReferenceImage(
-            image=types.Image.from_file(location=temp_asset_path),
-            reference_type="asset",
-        )
-        logger.info("[VEO] Loaded product reference image as asset")
+    try:
+        for idx, scene in enumerate(req.scenes):
+            print(f"[SoraVideo] scene {idx + 1}/{len(req.scenes)} starting")
+            final_prompt = build_prompt(scene.prompt, scene.dialogue)
 
-    # Generate each scene
-    for idx, scene in enumerate(req.scenes):
-        logger.info(f"[VEO] Processing scene {idx + 1}/{len(req.scenes)}")
-        final_prompt = build_prompt(scene.prompt, scene.dialogue)
+            video_bytes = _sora_generate_scene_video(
+                scene_index=idx,
+                total_scenes=len(req.scenes),
+                prompt=final_prompt,
+                image_base64=req.style_reference_image_base64,
+                duration_seconds=req.duration_seconds,
+                aspect_ratio=req.aspect_ratio,
+            )
 
-        config_params = {
-            "aspect_ratio": req.aspect_ratio,
-            "number_of_videos": 1,
-            "duration_seconds": req.duration_seconds,
-            "generate_audio": req.generate_audio,
-            "negative_prompt": DEFAULT_NEGATIVE_PROMPT,
+            local_path = tempfile.mktemp(suffix=f"_scene_{idx}.mp4")
+            with open(local_path, "wb") as f:
+                f.write(video_bytes)
+            local_video_files.append(local_path)
+            print(f"[SoraVideo] scene {idx + 1}/{len(req.scenes)} saved -> {local_path}")
+
+        # Stitch if multiple scenes, otherwise use the single scene file
+        if len(local_video_files) > 1:
+            stitched_path = tempfile.mktemp(suffix="_ad.mp4")
+            print(f"[SoraVideo] stitching {len(local_video_files)} scenes -> {stitched_path}")
+            stitch_videos(local_video_files, stitched_path)
+        else:
+            stitched_path = local_video_files[0]
+
+        # Try GCS upload, fallback to base64
+        stitched_url: Optional[str] = None
+        stitched_b64: Optional[str] = None
+        try:
+            stitched_obj = f"ads/{ad_id}/ad.mp4"
+            upload_to_gcs(stitched_path, stitched_obj)
+            stitched_url = get_public_url(BUCKET_NAME, stitched_obj)
+            print(f"[SoraVideo] uploaded stitched video to GCS: {stitched_url}")
+        except Exception as e:
+            logger.warning(f"[SoraVideo] GCS upload failed ({e}), returning base64")
+            with open(stitched_path, "rb") as f:
+                stitched_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        return {
+            "stitched_video_url": stitched_url,
+            "stitched_video_base64": stitched_b64,
+            "scene_video_urls": [],
         }
 
-        if asset_reference_config:
-            config_params["reference_images"] = [asset_reference_config]
-
-        operation = client.models.generate_videos(
-            model=VIDEO_MODEL,
-            prompt=final_prompt,
-            config=types.GenerateVideosConfig(**config_params),
-        )
-
-        # Poll
-        max_polls = 60  # 8 min max per scene
-        for poll_count in range(max_polls):
-            time.sleep(8)
-            operation = client.operations.get(operation)
-            if operation.done:
-                break
-            logger.info(f"[VEO] Scene {idx + 1} still generating... (poll {poll_count + 1})")
-
-        if not operation.done:
-            logger.error(f"[VEO] Scene {idx + 1} timed out after {max_polls * 8}s")
-            raise HTTPException(status_code=500, detail=f"Scene {idx + 1}: Veo timed out")
-
-        # Log full operation for debugging
-        logger.info(f"[VEO] Scene {idx + 1} operation done. Has result: {operation.result is not None}")
-        if operation.result:
-            logger.info(f"[VEO] Scene {idx + 1} generated_videos count: {len(operation.result.generated_videos) if operation.result.generated_videos else 0}")
-        if hasattr(operation, 'error') and operation.error:
-            logger.error(f"[VEO] Scene {idx + 1} operation error: {operation.error}")
-        if hasattr(operation, 'metadata') and operation.metadata:
-            logger.info(f"[VEO] Scene {idx + 1} metadata: {operation.metadata}")
-
-        if not operation.result or not operation.result.generated_videos:
-            # Try to extract useful error info
-            error_detail = "Veo returned no video"
-            if hasattr(operation, 'error') and operation.error:
-                error_detail = f"Veo error: {operation.error}"
-            elif operation.result and hasattr(operation.result, 'rai_media_filtered_count'):
-                if operation.result.rai_media_filtered_count and operation.result.rai_media_filtered_count > 0:
-                    error_detail = "Video was blocked by Veo safety filter (RAI). Try a different prompt."
-            logger.error(f"[VEO] Scene {idx + 1}: {error_detail}. Full operation: {operation}")
-            raise HTTPException(status_code=500, detail=f"Scene {idx + 1}: {error_detail}")
-
-        video = operation.result.generated_videos[0].video
-        logger.info(f"[VEO] Scene {idx + 1} done!")
-
-        # Download video — try GCS URI first, then inline data
-        local_path = tempfile.mktemp(suffix=f"_scene_{idx}.mp4")
-        if video.uri:
-            logger.info(f"[VEO] Downloading scene {idx + 1} from: {video.uri}")
+    finally:
+        # Cleanup temp files
+        for p in local_video_files:
             try:
-                download_gcs_file(video.uri, local_path)
-            except Exception as e:
-                logger.error(f"[VEO] GCS download failed: {e}")
-                if hasattr(video, 'video_bytes') and video.video_bytes:
-                    with open(local_path, "wb") as f:
-                        f.write(video.video_bytes)
-                else:
-                    raise HTTPException(status_code=500, detail=f"Scene {idx + 1}: Cannot download video")
-        elif hasattr(video, 'video_bytes') and video.video_bytes:
-            with open(local_path, "wb") as f:
-                f.write(video.video_bytes)
-        else:
-            raise HTTPException(status_code=500, detail=f"Scene {idx + 1}: No video URI or bytes")
-
-        local_video_files.append(local_path)
-
-    # Stitch if multiple scenes, otherwise use single scene
-    if len(local_video_files) > 1:
-        stitched_path = tempfile.mktemp(suffix="_ad.mp4")
-        stitch_videos(local_video_files, stitched_path)
-    else:
-        stitched_path = local_video_files[0]
-
-    # Try GCS upload, fallback to base64
-    stitched_url = None
-    stitched_b64 = None
-    try:
-        stitched_obj = f"ads/{ad_id}/ad.mp4"
-        upload_to_gcs(stitched_path, stitched_obj)
-        stitched_url = get_public_url(BUCKET_NAME, stitched_obj)
-        logger.info(f"[VEO] Uploaded stitched video to GCS")
-    except Exception as e:
-        logger.warning(f"[VEO] GCS upload failed ({e}), returning base64")
-        with open(stitched_path, "rb") as f:
-            stitched_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-    # Cleanup
-    if temp_asset_path and os.path.exists(temp_asset_path):
-        os.remove(temp_asset_path)
-    for p in local_video_files:
-        if os.path.exists(p):
-            os.remove(p)
-    if len(local_video_files) > 1 and os.path.exists(stitched_path):
-        os.remove(stitched_path)
-
-    return {
-        "stitched_video_url": stitched_url,
-        "stitched_video_base64": stitched_b64,
-        "scene_video_urls": [],
-    }
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        if len(local_video_files) > 1:
+            try:
+                # stitched_path is only distinct when there are multiple scenes
+                if "stitched_path" in locals() and os.path.exists(stitched_path):  # type: ignore[name-defined]
+                    os.remove(stitched_path)  # type: ignore[name-defined]
+            except Exception:
+                pass
 
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "service": "video-gen-service", "model": VIDEO_MODEL}
+    return {
+        "status": "healthy",
+        "service": "video-gen-service",
+        "model": SORA_VIDEO_MODEL,
+        "provider": "openai",
+    }

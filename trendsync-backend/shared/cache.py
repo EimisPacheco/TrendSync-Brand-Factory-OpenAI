@@ -123,18 +123,35 @@ def cached(prefix: str, ttl: int = 86400, skip_args: Optional[list[int]] = None)
             )
             key = _make_key(prefix, cache_args, kwargs)
 
+            # Pick a provider label so the log reflects which API actually
+            # fires on a cache miss. Prefix-based since each subsystem is
+            # bound to one provider in this codebase.
+            _provider_by_prefix = {
+                "trends":      "OpenAI",   # gpt-5.x + web_search
+                "celebrities": "OpenAI",
+                "techpack":    "OpenAI",
+                "collection":  "OpenAI",
+                "design":      "OpenAI",   # Lux design companion (Agents SDK)
+                "ad_video":    "OpenAI",   # storyboard text only (Fal renders)
+                "img_gen":     "OpenAI",   # GPT Image 2
+                "img_edit":    "OpenAI",   # GPT Image 2 natural-language edit
+                "composite":   "OpenAI",   # GPT Image 2 multi-image edit
+                "voice":       "OpenAI",   # Realtime
+            }
+            provider = _provider_by_prefix.get(prefix, "API")
+
             # Check cache
             t0 = time.time()
             hit = get(key)
             if hit is not None:
                 _hits += 1
                 elapsed = (time.time() - t0) * 1000
-                print(f"[Cache] ⚡ HIT  {prefix} ({key[-8:]}) — served from Redis in {elapsed:.0f}ms (saved a Gemini API call)")
+                print(f"[Cache] ⚡ HIT  {prefix} ({key[-8:]}) — served from Redis in {elapsed:.0f}ms (saved a {provider} API call)")
                 return json.loads(hit)
 
             # Cache miss — call the real function
             _misses += 1
-            print(f"[Cache] 🔄 MISS {prefix} ({key[-8:]}) — calling Gemini API...")
+            print(f"[Cache] 🔄 MISS {prefix} ({key[-8:]}) — calling {provider} API...")
             result = fn(*args, **kwargs)
             elapsed = (time.time() - t0) * 1000
 
@@ -143,7 +160,7 @@ def cached(prefix: str, ttl: int = 86400, skip_args: Optional[list[int]] = None)
                 serialized = json.dumps(result)
                 if len(serialized) < 5_000_000:
                     set(key, serialized, ttl)
-                    print(f"[Cache] 💾 STORED {prefix} ({key[-8:]}) — {len(serialized)} bytes, TTL {ttl}s (Gemini call took {elapsed:.0f}ms)")
+                    print(f"[Cache] 💾 STORED {prefix} ({key[-8:]}) — {len(serialized)} bytes, TTL {ttl}s ({provider} call took {elapsed:.0f}ms)")
                 else:
                     print(f"[Cache] ⚠️  Skipping store for {prefix} — result too large ({len(serialized)} bytes)")
             except (TypeError, ValueError):

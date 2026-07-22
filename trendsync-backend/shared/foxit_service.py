@@ -205,6 +205,11 @@ def _merge_product_into_techpack(product: dict, techpack: dict) -> dict:
     return merged
 
 
+def get_merged_techpack_data(product: dict, techpack: dict) -> dict:
+    """Public helper exposing the same merged source-of-truth payload used by exports."""
+    return _merge_product_into_techpack(product, techpack)
+
+
 # --------------------------------------------------------------------------- #
 # Build complete DOCX from single merged techpack dict                        #
 # --------------------------------------------------------------------------- #
@@ -577,6 +582,15 @@ def generate_techpack_pdf(product: dict, techpack: dict, brand_name: str = "") -
 
     logger.info("[Foxit] Converting DOCX → PDF via Foxit PDF Services")
     return convert_docx_to_pdf(docx_bytes)
+
+
+def generate_techpack_docx(product: dict, techpack: dict, brand_name: str = "") -> bytes:
+    """
+    Generate a single tech pack DOCX from the same merged source-of-truth payload
+    used by PDF generation.
+    """
+    logger.info("[Foxit] Building DOCX for: %s", product.get("name", "?"))
+    return _build_techpack_docx(product, techpack, brand_name)
 
 
 def generate_full_techpack_pdf(

@@ -1,7 +1,7 @@
-import { Home, Palette, Shield, Layers, TrendingUp, Settings, LogOut, FolderOpen } from 'lucide-react';
+import { Home, Palette, Shield, Layers, TrendingUp, Settings, LogOut, FolderOpen, Users } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
-export type View = 'dashboard' | 'brand-style' | 'brand-guardian' | 'collection' | 'collection-library' | 'trends' | 'settings';
+export type View = 'dashboard' | 'brand-style' | 'brand-guardian' | 'collection' | 'collection-library' | 'company-models' | 'trends' | 'settings';
 
 interface SidebarProps {
   currentView: View;
@@ -14,6 +14,7 @@ const NAV_ITEMS: { id: View; label: string; icon: React.ReactNode; description: 
   { id: 'brand-guardian', label: 'Brand Guardian', icon: <Shield size={20} />, description: 'Validation demo' },
   { id: 'collection', label: 'Collections', icon: <Layers size={20} />, description: 'Plan & generate' },
   { id: 'collection-library', label: 'Collection Library', icon: <FolderOpen size={20} />, description: 'Browse & manage saved' },
+  { id: 'company-models', label: 'Company Models', icon: <Users size={20} />, description: 'Shared model roster' },
   { id: 'trends', label: 'Trend Intel', icon: <TrendingUp size={20} />, description: 'Market insights' },
 ];
 

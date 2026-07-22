@@ -75,6 +75,15 @@ export interface BrandStyle {
   created_by: string;
 }
 
+export interface CompanyModel {
+  id: string;
+  name: string;
+  description: string | null;
+  image_url: string;
+  attributes: Record<string, unknown> | null;
+  created_at: string;
+}
+
 export interface UserProfile {
   id: string;
   full_name: string;
@@ -357,6 +366,11 @@ export interface Database {
         Row: LoginAudit;
         Insert: Omit<LoginAudit, 'id' | 'login_at'>;
         Update: never;
+      };
+      company_models: {
+        Row: CompanyModel;
+        Insert: Omit<CompanyModel, 'id' | 'created_at'>;
+        Update: Partial<Omit<CompanyModel, 'id'>>;
       };
     };
   };

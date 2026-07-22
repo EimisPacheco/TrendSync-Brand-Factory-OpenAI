@@ -1,11 +1,13 @@
 """
 Ad Video Engine
-Uses Gemini 3 Pro with thinking levels to plan ad storyboards,
-then delegates to Veo 3.1 for video generation.
+Uses OpenAI GPT-5.6 Sol (Responses API) to plan ad storyboards,
+then delegates to the OpenAI Sora video service for rendering.
 Follows the same Phase A → Phase B → Validate → Generate pattern as
 Imaginable's create_episode_engine.py.
 """
 
+import base64
+import io
 import json
 import os
 import time
@@ -13,14 +15,34 @@ import uuid
 import requests
 from typing import Any, Dict, List, Optional
 
-from google import genai
-from google.genai import types
+from openai import OpenAI
 
 
-GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-3-pro-preview")
-GEMINI_FLASH_MODEL = os.environ.get("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+def _pick_aspect_ratio_for_image(image_b64: Optional[str], fallback: str) -> str:
+    """Read the input image dimensions and return the closest Grok-supported
+    aspect ratio (16:9, 1:1, or 9:16). Falls back to `fallback` on any error.
+
+    Fashion product photos are usually portrait (3:4, 4:5) or square (1:1),
+    so forcing 16:9 letterboxes / crops them. Matching the source orientation
+    is what stops the video framing from looking different than the still."""
+    if not image_b64:
+        return fallback
+    try:
+        from PIL import Image  # local import to keep import-time cheap
+        raw = base64.b64decode(image_b64)
+        with Image.open(io.BytesIO(raw)) as im:
+            w, h = im.size
+        if not w or not h:
+            return fallback
+        ratio = w / h
+        # 9:16 ≈ 0.5625, 1:1 = 1.0, 16:9 ≈ 1.78. Pick the closest.
+        candidates = (("9:16", 9 / 16), ("1:1", 1.0), ("16:9", 16 / 9))
+        return min(candidates, key=lambda c: abs(ratio - c[1]))[0]
+    except Exception:
+        return fallback
+
+
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-sol")
 
 VIDEO_GEN_ENDPOINT = os.environ.get(
     "VIDEO_GEN_SERVICE_URL", "http://localhost:8001"
@@ -30,8 +52,8 @@ REQUIRED_SCENE_COUNT = 5
 MAX_VALIDATION_RETRIES = 3
 
 
-def get_client() -> genai.Client:
-    return genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
+def get_client() -> OpenAI:
+    return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 
 # --------------------------------------------------------------------------
@@ -61,7 +83,7 @@ def validate_storyboard(storyboard: Dict[str, Any]) -> tuple[bool, List[str]]:
 # --------------------------------------------------------------------------
 
 def generate_storyboard(
-    client: genai.Client,
+    client: OpenAI,
     product: Dict[str, Any],
     brand_style: Dict[str, Any],
     campaign_brief: str = "",
@@ -109,7 +131,7 @@ REQUIRED JSON SCHEMA:
     {{
       "scene_number": 1,
       "scene_type": "hook|hero|detail|lifestyle|cta",
-      "prompt": "Detailed Veo video generation prompt (150-250 words). Describe exact visuals, camera movement, lighting, mood. Product must match the reference image exactly.",
+      "prompt": "Detailed video generation prompt (150-250 words). Describe exact visuals, camera movement, lighting, mood. Product must match the reference image exactly.",
       "voiceover": "Marketing narration for this scene (1 sentence, speakable in 5-6 seconds)",
       "camera_movement": "slow zoom in|orbit|tracking|static|pull back",
       "mood": "dramatic|elegant|energetic|warm|bold|minimal",
@@ -127,23 +149,17 @@ CRITICAL VEO PROMPT RULES:
 - Keep voiceover concise — max 2 sentences per scene, speakable in 6-8 seconds
 """
 
-    response = client.models.generate_content(
-        model=GEMINI_PRO_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(
-                thinking_level=types.ThinkingLevel.HIGH,
-                include_thoughts=False,
-            ),
-            response_mime_type="application/json",
-        ),
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        input=prompt,
     )
+    raw_text = response.output_text
 
     print(f"[AdVideoEngine] === RAW AI RESPONSE (Storyboard Plan) ===")
-    print(response.text[:5000])
+    print(raw_text[:5000])
     print(f"[AdVideoEngine] === END RAW RESPONSE ===")
 
-    storyboard = json.loads(response.text)
+    storyboard = json.loads(raw_text)
     if isinstance(storyboard, list) and len(storyboard) > 0:
         storyboard = storyboard[0]
     return storyboard
@@ -154,17 +170,14 @@ CRITICAL VEO PROMPT RULES:
 # --------------------------------------------------------------------------
 
 def expand_scene(
-    client: genai.Client,
+    client: OpenAI,
     scene: Dict[str, Any],
     product: Dict[str, Any],
     brand_style: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Expand a scene with more detailed Veo prompt."""
+    """Expand a scene with a detailed Sora-compatible video prompt."""
 
-    is_hero = scene.get("scene_type") in ("hero", "detail")
-    thinking_level = types.ThinkingLevel.HIGH if is_hero else types.ThinkingLevel.LOW
-
-    prompt = f"""Enhance this ad scene with a production-ready Veo video generation prompt.
+    prompt = f"""Enhance this ad scene with a production-ready video generation prompt.
 
 PRODUCT: {product.get('name', '')} - {product.get('description', '')}
 MATERIAL: {product.get('material', '')}
@@ -189,23 +202,17 @@ No text, no humans, product-focused.
 
 Return the complete scene JSON with enhanced prompt."""
 
-    response = client.models.generate_content(
-        model=GEMINI_PRO_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(
-                thinking_level=thinking_level,
-                include_thoughts=False,
-            ),
-            response_mime_type="application/json",
-        ),
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        input=prompt,
     )
+    raw_text = response.output_text
 
     print(f"[AdVideoEngine] === RAW AI RESPONSE (Scene Expand: {scene.get('scene_type', '')}) ===")
-    print(response.text[:3000])
+    print(raw_text[:3000])
     print(f"[AdVideoEngine] === END RAW RESPONSE ===")
 
-    expanded = json.loads(response.text)
+    expanded = json.loads(raw_text)
     if isinstance(expanded, list) and len(expanded) > 0:
         expanded = expanded[0]
     return expanded
@@ -216,7 +223,7 @@ Return the complete scene JSON with enhanced prompt."""
 # --------------------------------------------------------------------------
 
 def repair_storyboard(
-    client: genai.Client,
+    client: OpenAI,
     storyboard: Dict[str, Any],
     errors: List[str],
 ) -> Dict[str, Any]:
@@ -234,44 +241,38 @@ REQUIREMENTS:
 
 Return corrected JSON."""
 
-    response = client.models.generate_content(
-        model=GEMINI_PRO_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(
-                thinking_level=types.ThinkingLevel.HIGH,
-                include_thoughts=False,
-            ),
-            response_mime_type="application/json",
-        ),
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        input=prompt,
     )
+    raw_text = response.output_text
 
-    repaired = json.loads(response.text)
+    repaired = json.loads(raw_text)
     if isinstance(repaired, list) and len(repaired) > 0:
         repaired = repaired[0]
     return repaired
 
 
 # --------------------------------------------------------------------------
-# Convert storyboard → Veo request
+# Convert storyboard → video-service request
 # --------------------------------------------------------------------------
 
-def convert_to_veo_request(
+def convert_to_video_service_request(
     storyboard: Dict[str, Any],
     product_image_base64: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Convert storyboard to Veo generation service request payload."""
-    veo_scenes = []
+    """Convert a storyboard to the video-service request payload."""
+    scenes = []
     for scene in storyboard["scenes"]:
-        veo_scenes.append({
+        scenes.append({
             "prompt": scene["prompt"],
             "dialogue": scene.get("voiceover"),
             "interaction": False,  # Ad videos are non-interactive
         })
 
     request = {
-        "scenes": veo_scenes,
-        "duration_seconds": 6,
+        "scenes": scenes,
+        "duration_seconds": 8,
         "aspect_ratio": "16:9",
         "generate_audio": True,
     }
@@ -282,11 +283,23 @@ def convert_to_veo_request(
     return request
 
 
+def convert_to_veo_request(
+    storyboard: Dict[str, Any],
+    product_image_base64: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Compatibility alias retained for existing callers and tests."""
+    return convert_to_video_service_request(storyboard, product_image_base64)
+
+
 # --------------------------------------------------------------------------
 # Public pipeline
 # --------------------------------------------------------------------------
 
-def _build_fallback_video_prompt(product: Dict[str, Any], brand_style: Dict[str, Any]) -> str:
+def _build_fallback_video_prompt(
+    product: Dict[str, Any],
+    brand_style: Dict[str, Any],
+    has_model: bool = False,
+) -> str:
     """Build a video prompt directly from product data (no LLM call needed)."""
     name = product.get("name", "fashion product")
     category = product.get("category", "garment")
@@ -295,6 +308,22 @@ def _build_fallback_video_prompt(product: Dict[str, Any], brand_style: Dict[str,
     color_palette = ", ".join(
         f"{c['name']}" for c in brand_style.get("colorPalette", [])
     )
+
+    if has_model:
+        return (
+            f"Cinematic editorial fashion video. The model from the reference "
+            f"image is wearing the {name} ({category}, {material}, "
+            f"{color_story or color_palette or 'neutral tones'}). "
+            f"Full-body framing — show the model from head to toe throughout the entire video. "
+            f"The model performs subtle, elegant motion: a slow turn, a gentle walk forward, "
+            f"or a graceful pose adjustment. Her face, hair, skin tone, and overall appearance "
+            f"match the reference image EXACTLY. "
+            f"Plain seamless studio background with soft cinematic lighting. "
+            f"Professional fashion brand advertisement quality, photorealistic, polished color grading. "
+            f"No text, no logos, no watermarks. "
+            f"The garment must match the reference image exactly — "
+            f"same color, fabric, silhouette, and design details."
+        )
 
     return (
         f"High-quality 3D product visualization of a {name} ({category}). "
@@ -318,24 +347,50 @@ def generate_single_product_video(
     product: Dict[str, Any],
     brand_style: Dict[str, Any],
     product_image_base64: Optional[str] = None,
+    has_model: bool = False,
+    duration_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Generate a single-scene 10-second Veo video for one product.
-    The product image is passed as an asset reference so the video
-    matches the generated product image exactly.
+    Generate a single-scene Sora video for one product.
+    The product image (or, if `has_model`, a pre-composited model+product image)
+    is passed as the starting frame so the video matches it exactly.
     """
     color_palette = ", ".join(
         f"{c['name']} ({c['hex']})" for c in brand_style.get("colorPalette", [])
     )
 
-    # Try Gemini for a richer prompt; fall back to template if rate-limited
-    # Attempt 1: Gemini Pro, Attempt 2: Gemini Flash, Attempt 3: fallback template
+    # Try OpenAI for a richer prompt; fall back to template if rate-limited
     video_prompt = None
-    models_to_try = [GEMINI_PRO_MODEL, GEMINI_FLASH_MODEL]
+    models_to_try = [OPENAI_MODEL]
     for attempt, model_id in enumerate(models_to_try):
         try:
             client = get_client()
-            prompt = f"""Create a single cinematic advertisement video prompt for this fashion product.
+            if has_model:
+                prompt = f"""Create a single cinematic editorial fashion video prompt.
+
+The reference image shows a fashion model wearing this product:
+- Name: {product.get('name', '')}
+- Category: {product.get('category', '')}
+- Description: {product.get('description', '')}
+- Color Story: {product.get('color_story', '')}
+- Material: {product.get('material', '')}
+
+BRAND COLORS: {color_palette}
+
+CRITICAL — The video MUST feature the same model from the reference image, wearing the same garment, kept identical in face, hair, skin tone, body, and outfit. Full-body framing throughout — the viewer should see the model from head to toe at all times.
+
+Create a prompt for an 8-second luxury fashion advertisement video:
+1. The model is the focal subject; the camera follows her from a respectful distance.
+2. Subtle, elegant motion — slow turn, soft walk forward, graceful pose adjustment, or gentle fabric movement.
+3. Cinematic studio lighting; clean neutral or softly graded background.
+4. Premium, aspirational, photorealistic fashion-brand quality.
+5. The garment matches the reference image exactly: same color, fabric, silhouette, design details.
+6. Full-body shot held throughout — no extreme close-ups that crop out the head, hands, or feet.
+7. No text, no logos, no watermarks, no body warping, no extra people.
+
+Return ONLY the video prompt (200-300 words)."""
+            else:
+                prompt = f"""Create a single cinematic advertisement video prompt for this fashion product.
 
 PRODUCT:
 - Name: {product.get('name', '')}
@@ -363,17 +418,11 @@ Create a prompt for a 10-second luxury advertisement video:
 Return ONLY the video prompt (200-300 words)."""
 
             print(f"[AdVideoEngine] Trying model: {model_id}")
-            response = client.models.generate_content(
+            response = client.responses.create(
                 model=model_id,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(
-                        thinking_level=types.ThinkingLevel.LOW,
-                        include_thoughts=False,
-                    ),
-                ),
+                input=prompt,
             )
-            video_prompt = response.text.strip()
+            video_prompt = response.output_text.strip()
             print(f"[AdVideoEngine] Prompt OK ({model_id}) for '{product.get('name', '')}': {video_prompt[:200]}...")
             break
 
@@ -385,19 +434,34 @@ Return ONLY the video prompt (200-300 words)."""
                 time.sleep(wait)
 
     if not video_prompt:
-        print("[AdVideoEngine] All Gemini attempts failed — using fallback prompt")
-        video_prompt = _build_fallback_video_prompt(product, brand_style)
+        print("[AdVideoEngine] All OpenAI attempts failed — using fallback prompt")
+        video_prompt = _build_fallback_video_prompt(product, brand_style, has_model=has_model)
 
-    # Send to Veo service — single scene, 10 seconds
-    print(f"[AdVideoEngine] Sending to Veo service at {VIDEO_GEN_ENDPOINT}...")
+    # Send to the Sora-backed video service — single scene.
+    # Match the video aspect ratio to the input image so the generated video
+    # frames the product the same way as the still. Fashion product photos
+    # are typically portrait (3:4 / 4:5), so forcing 16:9 ends up cropping or
+    # squashing them. With a model in frame we always want 9:16 to keep a
+    # head-to-toe shot intact.
+    if has_model:
+        aspect_ratio = "9:16"
+    else:
+        aspect_ratio = _pick_aspect_ratio_for_image(product_image_base64, fallback="9:16")
+    # Clamp duration to a sane band; default 8s.
+    duration = duration_seconds if isinstance(duration_seconds, int) else 8
+    duration = max(4, min(30, duration))
+    print(
+        f"[AdVideoEngine] Sending to video service at {VIDEO_GEN_ENDPOINT} "
+        f"(duration={duration}s, aspect={aspect_ratio}, has_model={has_model})..."
+    )
     request_payload = {
         "scenes": [{"prompt": video_prompt, "dialogue": None, "interaction": False}],
-        "duration_seconds": 8,
-        "aspect_ratio": "16:9",
+        "duration_seconds": duration,
+        "aspect_ratio": aspect_ratio,
         "generate_audio": True,
     }
 
-    # Pass the product image as an asset reference so Veo generates
+    # Pass the product image as an asset reference so Sora generates
     # a video that looks IDENTICAL to the still image
     if product_image_base64:
         request_payload["style_reference_image_base64"] = product_image_base64
@@ -409,13 +473,13 @@ Return ONLY the video prompt (200-300 words)."""
     )
 
     if response.status_code != 200:
-        raise ValueError(f"Veo video generation failed: {response.status_code}: {response.text[:500]}")
+        raise ValueError(f"Video generation failed: {response.status_code}: {response.text[:500]}")
 
-    veo_response = response.json()
+    video_response = response.json()
 
     return {
-        "video_url": veo_response.get("stitched_video_url"),
-        "video_base64": veo_response.get("stitched_video_base64"),
+        "video_url": video_response.get("stitched_video_url"),
+        "video_base64": video_response.get("stitched_video_base64"),
         "video_prompt": video_prompt,
     }
 
@@ -468,34 +532,34 @@ def generate_complete_ad_video(
     ad_style: str = "cinematic",
 ) -> Dict[str, Any]:
     """
-    Full pipeline: Storyboard → Veo videos → stitched ad.
+    Full pipeline: Storyboard → Sora videos → stitched ad.
     """
     # Step 1: Generate storyboard
     print("[Ad Pipeline] Step 1: Generating storyboard...")
     storyboard = generate_ad_storyboard(product, brand_style, campaign_brief, ad_style)
 
-    # Step 2: Send to Veo service
-    print("[Ad Pipeline] Step 2: Generating videos with Veo...")
-    veo_request = convert_to_veo_request(storyboard, product_image_base64)
+    # Step 2: Send to the Sora video service
+    print("[Ad Pipeline] Step 2: Generating videos with Sora...")
+    video_request = convert_to_video_service_request(storyboard, product_image_base64)
 
     response = requests.post(
         VIDEO_GEN_ENDPOINT,
-        json=veo_request,
+        json=video_request,
         timeout=7200,
     )
 
     if response.status_code != 200:
         raise ValueError(f"Video generation failed: {response.status_code}: {response.text}")
 
-    veo_response = response.json()
+    video_response = response.json()
 
     # Update storyboard with video URLs (scenes may be empty)
-    scene_urls = veo_response.get("scene_video_urls", [])
+    scene_urls = video_response.get("scene_video_urls", [])
     for i, scene in enumerate(storyboard["scenes"]):
         scene["video_url"] = scene_urls[i] if i < len(scene_urls) else None
 
-    storyboard["stitched_video_url"] = veo_response.get("stitched_video_url")
-    storyboard["stitched_video_base64"] = veo_response.get("stitched_video_base64")
+    storyboard["stitched_video_url"] = video_response.get("stitched_video_url")
+    storyboard["stitched_video_base64"] = video_response.get("stitched_video_base64")
 
     print(f"[Ad Pipeline] Complete! Ad ready: {storyboard['ad_id']}")
     return storyboard

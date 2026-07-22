@@ -1,28 +1,46 @@
 """
 Collection Engine
-Uses Gemini 3 Pro with thinking levels to orchestrate collection generation.
+Uses OpenAI GPT-5.6 Sol (Responses API) to orchestrate collection generation.
 Follows the same Phase A → Phase B → Validate → Repair pattern as
 Imaginable's create_episode_engine.py.
 """
 
 import json
 import os
+import re
 import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from google import genai
-from google.genai import types
+from openai import OpenAI
 
-GEMINI_PRO_MODEL = os.environ.get("GEMINI_PRO_MODEL", "gemini-3-pro-preview")
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "project-ca52e7fa-d4e3-47fa-9df")
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "global")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-sol")
 
 MAX_VALIDATION_RETRIES = 3
 
 
-def get_client() -> genai.Client:
-    return genai.Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
+def get_client() -> OpenAI:
+    return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+
+def _parse_model_json(raw_text: str) -> Dict[str, Any]:
+    """Parse JSON responses even when a model wraps them in Markdown fences."""
+    cleaned = raw_text.strip()
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", cleaned, re.IGNORECASE)
+    if fenced:
+        cleaned = fenced.group(1).strip()
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        parsed = json.loads(cleaned[start : end + 1])
+    if isinstance(parsed, list) and parsed:
+        parsed = parsed[0]
+    if not isinstance(parsed, dict):
+        raise ValueError("Expected a JSON object from the collection model")
+    return parsed
 
 
 # --------------------------------------------------------------------------
@@ -57,7 +75,7 @@ def validate_collection_schema(collection: Dict[str, Any], expected_count: int) 
 # --------------------------------------------------------------------------
 
 def generate_collection_plan(
-    client: genai.Client,
+    client: OpenAI,
     config: Dict[str, Any],
     brand_style: Dict[str, Any],
     trend_insights: Optional[Dict[str, Any]] = None,
@@ -139,27 +157,17 @@ RULES:
 8. CRITICAL IMAGE RULES: Each image_prompt MUST specify: exactly ONE single product, centered in square frame, solid white background, product fills 70-80% of frame, entire product visible with no cropping, front-facing view only, no mannequin, no human model, no multiple angles or side-by-side views
 """
 
-    response = client.models.generate_content(
-        model=GEMINI_PRO_MODEL,
-        contents=planning_prompt,
-        config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(
-                thinking_level=types.ThinkingLevel.HIGH,
-                include_thoughts=False,
-            ),
-            response_mime_type="application/json",
-        ),
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        input=planning_prompt,
     )
+    raw_text = response.output_text
 
     print(f"[CollectionEngine] === RAW AI RESPONSE (Phase A: Collection Plan) ===")
-    print(response.text[:5000])
+    print(raw_text[:5000])
     print(f"[CollectionEngine] === END RAW RESPONSE ===")
 
-    plan = json.loads(response.text)
-    # Handle list response
-    if isinstance(plan, list) and len(plan) > 0:
-        plan = plan[0]
-    return plan
+    return _parse_model_json(raw_text)
 
 
 # --------------------------------------------------------------------------
@@ -167,15 +175,13 @@ RULES:
 # --------------------------------------------------------------------------
 
 def expand_product(
-    client: genai.Client,
+    client: OpenAI,
     product_stub: Dict[str, Any],
     collection_context: Dict[str, Any],
     brand_style: Dict[str, Any],
     is_hero_piece: bool = False,
 ) -> Dict[str, Any]:
     """Expand a product with detailed image prompt and specs."""
-
-    thinking_level = types.ThinkingLevel.HIGH if is_hero_piece else types.ThinkingLevel.LOW
 
     color_palette_text = ", ".join(
         f"{c['name']} ({c['hex']})" for c in brand_style.get("colorPalette", [])
@@ -207,30 +213,21 @@ Enhance the image_prompt to be 200-300 words with:
 
 Return the complete product JSON with the enhanced image_prompt."""
 
-    response = client.models.generate_content(
-        model=GEMINI_PRO_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(
-                thinking_level=thinking_level,
-                include_thoughts=False,
-            ),
-            response_mime_type="application/json",
-        ),
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        input=prompt,
     )
+    raw_text = response.output_text
 
     print(f"[CollectionEngine] === RAW AI RESPONSE (Phase B: Product '{product_stub.get('name', '')}') ===")
-    print(response.text[:3000])
+    print(raw_text[:3000])
     print(f"[CollectionEngine] === END RAW RESPONSE ===")
 
-    expanded = json.loads(response.text)
-    if isinstance(expanded, list) and len(expanded) > 0:
-        expanded = expanded[0]
-    return expanded
+    return _parse_model_json(raw_text)
 
 
 def expand_all_products(
-    client: genai.Client,
+    client: OpenAI,
     collection_plan: Dict[str, Any],
     brand_style: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -267,12 +264,12 @@ def expand_all_products(
 # --------------------------------------------------------------------------
 
 def repair_collection(
-    client: genai.Client,
+    client: OpenAI,
     collection: Dict[str, Any],
     errors: List[str],
     expected_count: int,
 ) -> Dict[str, Any]:
-    """Use Gemini to repair a failed collection based on validation errors."""
+    """Use the LLM to repair a failed collection based on validation errors."""
     prompt = f"""The following fashion collection JSON has validation errors. Fix them.
 
 ERRORS:
@@ -287,26 +284,17 @@ REQUIREMENTS:
 
 Return the corrected collection JSON."""
 
-    response = client.models.generate_content(
-        model=GEMINI_PRO_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(
-                thinking_level=types.ThinkingLevel.HIGH,
-                include_thoughts=False,
-            ),
-            response_mime_type="application/json",
-        ),
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        input=prompt,
     )
+    raw_text = response.output_text
 
     print(f"[CollectionEngine] === RAW AI RESPONSE (Repair) ===")
-    print(response.text[:3000])
+    print(raw_text[:3000])
     print(f"[CollectionEngine] === END RAW RESPONSE ===")
 
-    repaired = json.loads(response.text)
-    if isinstance(repaired, list) and len(repaired) > 0:
-        repaired = repaired[0]
-    return repaired
+    return _parse_model_json(raw_text)
 
 
 # --------------------------------------------------------------------------

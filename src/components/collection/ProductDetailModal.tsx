@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Eye, Shield, FileText, Copy, Check, ChevronDown, ChevronUp,
   Palette, Layers, Camera, Lightbulb, Image, Hash,
-  Package, Target, Star, Loader2, Download, Send, MessageSquare, Video
+  Package, Target, Star, Loader2, Download, Send, MessageSquare, Video, ExternalLink, Timer
 } from 'lucide-react';
+import { formatElapsed } from '../../lib/format';
 import type { CollectionItem } from '../../types/database';
 import { Modal } from '../ui/Modal';
 import { getComplianceBadge } from '../../lib/brand-guardian';
@@ -30,14 +31,22 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
   const [copied, setCopied] = useState(false);
   const [techPack, setTechPack] = useState<TechPack | null>(null);
   const [loadingTechPack, setLoadingTechPack] = useState(false);
+  // Wall-clock timer for FRESH tech-pack generation (not for cache hits).
+  const [techPackStartedAt, setTechPackStartedAt] = useState<number | null>(null);
+  const [techPackElapsedMs, setTechPackElapsedMs] = useState(0);
+  const [lastTechPackDurationMs, setLastTechPackDurationMs] = useState<number | null>(null);
   const [techPackExpanded, setTechPackExpanded] = useState<string[]>(['fabricType']);
   const [sendingEmail, setSendingEmail] = useState(false);
+  const [sendingToMiro, setSendingToMiro] = useState(false);
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const [miroDialogOpen, setMiroDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState('');
+  const [miroRecipientEmail, setMiroRecipientEmail] = useState('');
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [currentItem, setCurrentItem] = useState<CollectionItem | null>(item);
   const [validationData, setValidationData] = useState<any>(null);
-
+  const techPackGenerationRef = useRef<Promise<CollectionItem | null> | null>(null);
+  const previousItemIdRef = useRef<string | null>(item?.id ?? null);
   // Update active tab when initialTab changes (when a different icon button is clicked)
   useEffect(() => {
     setActiveTab(initialTab);
@@ -55,7 +64,14 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
   // No polling — in-memory edits are the source of truth until saved.
   useEffect(() => {
     if (!item || !isOpen) return;
+    const isNewItem = previousItemIdRef.current !== item.id;
+    previousItemIdRef.current = item.id;
     setCurrentItem(item);
+    if (isNewItem) {
+      setTechPack(null);
+      setLoadingTechPack(false);
+      techPackGenerationRef.current = null;
+    }
   }, [item, isOpen]);
 
   useEffect(() => {
@@ -64,57 +80,114 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
     }
   }, [currentItem, activeTab]);
 
-  const loadOrGenerateTechPack = async () => {
-    if (!currentItem) return;
+  // 1 Hz ticker for fresh tech-pack generations only.
+  useEffect(() => {
+    if (!loadingTechPack || techPackStartedAt == null) return;
+    const id = setInterval(() => setTechPackElapsedMs(Date.now() - techPackStartedAt), 1000);
+    return () => clearInterval(id);
+  }, [loadingTechPack, techPackStartedAt]);
 
-    setLoadingTechPack(true);
-    try {
-      // 1. Check if tech pack already exists in DB
-      if (currentItem.techpack_generated && currentItem.techpack_json) {
-        console.log('Loading saved tech pack from DB');
-        const savedTechPack = techPackGenerator.formatFromSaved(currentItem.techpack_json, currentItem);
-        setTechPack(savedTechPack);
-        return;
-      }
+  const hydrateTechPackFromSaved = (savedItem: CollectionItem): TechPack | null => {
+    if (!savedItem.techpack_generated || !savedItem.techpack_json) return null;
+    const savedTechPack = techPackGenerator.formatFromSaved(savedItem.techpack_json, savedItem);
+    setTechPack(savedTechPack);
+    return savedTechPack;
+  };
 
-      // 2. Generate new tech pack via Gemini
-      const generatedTechPack = await techPackGenerator.generateTechPack(currentItem);
-      setTechPack(generatedTechPack);
+  const loadOrGenerateTechPack = async (): Promise<CollectionItem | null> => {
+    if (!currentItem) return null;
 
-      // 3. Save to DB so it becomes the single source of truth
-      const rawTechPack = techPackGenerator.toRawJson(generatedTechPack);
-      await collectionItemStorage.update(currentItem.id, {
-        techpack_json: rawTechPack,
-        techpack_generated: true,
-      });
-      // Update local state
-      setCurrentItem(prev => prev ? { ...prev, techpack_json: rawTechPack, techpack_generated: true } : prev);
-      if (onItemUpdated) {
-        onItemUpdated({ id: currentItem.id, techpack_json: rawTechPack, techpack_generated: true });
-      }
-      toast.success('Tech pack generated and saved');
-    } catch (error) {
-      console.error('Error generating tech pack:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      toast.error(`Tech pack generation failed: ${errorMessage}`);
-    } finally {
-      setLoadingTechPack(false);
+    if (techPackGenerationRef.current) {
+      return techPackGenerationRef.current;
     }
+
+    const generationPromise = (async () => {
+      setLoadingTechPack(true);
+      try {
+        // 1. Check if tech pack already exists in DB
+        if (currentItem.techpack_generated && currentItem.techpack_json) {
+          console.log('Loading saved tech pack from DB');
+          hydrateTechPackFromSaved(currentItem);
+          return currentItem;
+        }
+
+        // 2. Generate new tech pack via OpenAI — start the wall-clock timer.
+        const tpStartedAt = Date.now();
+        setTechPackStartedAt(tpStartedAt);
+        setTechPackElapsedMs(0);
+        setLastTechPackDurationMs(null);
+        const generatedTechPack = await techPackGenerator.generateTechPack(currentItem);
+
+        // 3. Save to DB so it becomes the single source of truth
+        const rawTechPack = techPackGenerator.toRawJson(generatedTechPack);
+        const updatedItem = await collectionItemStorage.update(currentItem.id, {
+          techpack_json: rawTechPack,
+          techpack_generated: true,
+        });
+
+        const nextItem = updatedItem
+          ? ({ ...currentItem, ...updatedItem } as CollectionItem)
+          : ({ ...currentItem, techpack_json: rawTechPack, techpack_generated: true } as CollectionItem);
+
+        // Update local state only after successful persistence.
+        setCurrentItem(nextItem);
+        setTechPack(generatedTechPack);
+        const tookMs = Date.now() - tpStartedAt;
+        setLastTechPackDurationMs(tookMs);
+        if (onItemUpdated) {
+          onItemUpdated({ id: currentItem.id, techpack_json: rawTechPack, techpack_generated: true });
+        }
+        toast.success(`Tech pack generated in ${formatElapsed(tookMs)}`);
+        return nextItem;
+      } catch (error) {
+        console.error('Error generating tech pack:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        toast.error(`Tech pack generation failed: ${errorMessage}`);
+        return null;
+      } finally {
+        setLoadingTechPack(false);
+        setTechPackStartedAt(null);
+        techPackGenerationRef.current = null;
+      }
+    })();
+
+    techPackGenerationRef.current = generationPromise;
+    return generationPromise;
+  };
+
+  const ensureTechPackSaved = async (): Promise<{ item: CollectionItem; pack: TechPack } | null> => {
+    if (!currentItem) return null;
+
+    let ensuredItem = currentItem;
+    if (!ensuredItem.techpack_generated || !ensuredItem.techpack_json) {
+      const generated = await loadOrGenerateTechPack();
+      if (!generated?.techpack_generated || !generated.techpack_json) {
+        toast.error('Unable to save tech pack. Please try again.');
+        return null;
+      }
+      ensuredItem = generated;
+    }
+
+    let resolvedPack = techPack;
+    if (!resolvedPack) {
+      resolvedPack = hydrateTechPackFromSaved(ensuredItem);
+    }
+    if (!resolvedPack) {
+      toast.error('Tech pack is unavailable. Please regenerate it.');
+      return null;
+    }
+
+    return { item: ensuredItem, pack: resolvedPack };
   };
 
   const downloadTechPackPDF = async () => {
-    if (!currentItem || !techPack) return;
-
-    // Guard: tech pack must be saved to DB before PDF can be generated
-    if (!currentItem.techpack_generated || !currentItem.techpack_json) {
-      toast.error('Tech pack has not been saved yet. Please generate the tech pack first.');
-      return;
-    }
+    const ensured = await ensureTechPackSaved();
+    if (!ensured) return;
 
     setDownloadingPdf(true);
     try {
       const pdfGen = new PDFGenerator();
-      const fileName = await pdfGen.downloadPDF(currentItem, techPack);
+      const fileName = await pdfGen.downloadPDF(ensured.item, ensured.pack);
       toast.success(`Tech pack downloaded: ${fileName}`);
     } catch (error) {
       console.error('PDF download failed:', error);
@@ -125,21 +198,59 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
     }
   };
 
-  const sendTechPackEmail = async () => {
-    if (!currentItem || !techPack || !recipientEmail) return;
-
-    // Guard: tech pack must be saved to DB before PDF can be generated
-    if (!currentItem.techpack_generated || !currentItem.techpack_json) {
-      toast.error('Tech pack has not been saved yet. Please generate the tech pack first.');
+  const sendTechPackToMiro = async () => {
+    const ensured = await ensureTechPackSaved();
+    if (!ensured) return;
+    const trimmedEmail = miroRecipientEmail.trim();
+    if (!trimmedEmail) {
+      toast.error('Please provide a recipient email.');
       return;
     }
+    if (!trimmedEmail.includes('@')) {
+      toast.error('Please provide a valid recipient email.');
+      return;
+    }
+
+    setSendingToMiro(true);
+    try {
+      const exporter = new PDFGenerator();
+      const result = await exporter.sendToMiro(ensured.item, ensured.pack);
+
+      const mailResult = await emailService.sendMiroBoardLink(
+        trimmedEmail,
+        ensured.item,
+        result.boardUrl,
+        result.docUrl,
+      );
+      if (!mailResult.success) {
+        toast.error(mailResult.message);
+        return;
+      }
+
+      toast.success(`Miro board created and link emailed to ${trimmedEmail}`);
+      setMiroDialogOpen(false);
+      setMiroRecipientEmail('');
+      window.open(result.docUrl, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      console.error('Send to Miro failed:', error);
+      const msg = error instanceof Error ? error.message : 'Failed to send to Miro';
+      toast.error(msg);
+    } finally {
+      setSendingToMiro(false);
+    }
+  };
+
+  const sendTechPackEmail = async () => {
+    if (!recipientEmail) return;
+    const ensured = await ensureTechPackSaved();
+    if (!ensured) return;
 
     setSendingEmail(true);
     try {
       const pdfGen = new PDFGenerator();
-      const pdfBlob = await pdfGen.generateTechPackPDF(currentItem, techPack);
+      const pdfBlob = await pdfGen.generateTechPackPDF(ensured.item, ensured.pack);
 
-      const result = await emailService.sendTechPack(recipientEmail, currentItem, techPack, pdfBlob);
+      const result = await emailService.sendTechPack(recipientEmail, ensured.item, ensured.pack, pdfBlob);
 
       if (result.success) {
         toast.success(result.message);
@@ -150,6 +261,7 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
       }
     } catch (error) {
       toast.error('Failed to send tech pack email');
+      console.error('Send tech pack email failed:', error);
     } finally {
       setSendingEmail(false);
     }
@@ -567,12 +679,24 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
               <Loader2 size={48} className="text-pastel-accent animate-spin mb-4" />
               <p className="text-pastel-text">Generating comprehensive tech pack...</p>
               <p className="text-sm text-pastel-muted mt-2">Analyzing product specifications</p>
+              {techPackStartedAt != null && (
+                <div className="flex items-center gap-1.5 text-sm font-medium text-pastel-accent neumorphic-inset px-3 py-1.5 rounded-xl tabular-nums mt-4">
+                  <Timer size={14} />
+                  {formatElapsed(techPackElapsedMs)}
+                </div>
+              )}
             </div>
           );
         }
 
         return (
           <div className="space-y-6">
+            {lastTechPackDurationMs != null && (
+              <div className="neumorphic-inset px-3 py-1.5 rounded-xl text-xs text-pastel-muted flex items-center gap-1.5 w-fit">
+                <Timer size={12} className="text-pastel-accent" />
+                Generated in <span className="font-semibold text-pastel-navy">{formatElapsed(lastTechPackDurationMs)}</span>
+              </div>
+            )}
             <div className="neumorphic-card p-6">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-bold text-pastel-navy">Technical Specifications</h3>
@@ -591,19 +715,27 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
                   </button>
                   <button
                     onClick={downloadTechPackPDF}
-                    disabled={!techPack || downloadingPdf}
+                    disabled={!techPack || downloadingPdf || loadingTechPack}
                     className="btn-soft px-3 py-1.5 flex items-center gap-2 text-sm disabled:opacity-50"
                   >
                     {downloadingPdf ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
                     {downloadingPdf ? 'Generating...' : 'Download PDF'}
                   </button>
                   <button
+                    onClick={() => setMiroDialogOpen(true)}
+                    disabled={!techPack || sendingToMiro || loadingTechPack}
+                    className="btn-soft px-3 py-1.5 flex items-center gap-2 text-sm disabled:opacity-50"
+                  >
+                    {sendingToMiro ? <Loader2 size={16} className="animate-spin" /> : <ExternalLink size={16} />}
+                    Create Miro Board
+                  </button>
+                  <button
                     onClick={() => setEmailDialogOpen(true)}
-                    disabled={!techPack}
+                    disabled={!techPack || loadingTechPack}
                     className="btn-soft px-3 py-1.5 flex items-center gap-2 text-sm disabled:opacity-50"
                   >
                     <Send size={16} />
-                    Send Tech Pack
+                    Send Email
                   </button>
                 </div>
               </div>
@@ -820,11 +952,61 @@ export function ProductDetailModal({ item, isOpen, brandId, initialTab = 'overvi
       </div>
     </Modal>
 
+    {/* Model Selection Modal — shown before generating ad/product videos */}
+
+    {/* Miro Dialog */}
+    {miroDialogOpen && (
+      <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+        <div className="neumorphic-card p-6 max-w-lg w-full mx-4">
+          <h3 className="text-lg font-bold text-pastel-navy mb-4">Create Miro Board + Email Link</h3>
+          <p className="text-sm text-pastel-text mb-4">
+            We will create a new Miro board for this tech pack, add the document, and email the board link.
+          </p>
+          <input
+            type="email"
+            placeholder="recipient@email.com"
+            value={miroRecipientEmail}
+            onChange={(e) => setMiroRecipientEmail(e.target.value)}
+            className="w-full px-4 py-2 neumorphic-inset rounded-lg mb-4 text-pastel-navy bg-pastel-card"
+          />
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={() => {
+                setMiroDialogOpen(false);
+                setMiroRecipientEmail('');
+              }}
+              className="btn-soft px-4 py-2"
+              disabled={sendingToMiro}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={sendTechPackToMiro}
+              disabled={!miroRecipientEmail || sendingToMiro || !miroRecipientEmail.includes('@')}
+              className="btn-primary px-4 py-2 flex items-center gap-2"
+            >
+              {sendingToMiro ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <ExternalLink size={16} />
+                  Send
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
     {/* Email Dialog */}
     {emailDialogOpen && (
       <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
         <div className="neumorphic-card p-6 max-w-md w-full mx-4">
-          <h3 className="text-lg font-bold text-pastel-navy mb-4">Send Tech Pack</h3>
+          <h3 className="text-lg font-bold text-pastel-navy mb-4">Send Tech Pack Email</h3>
           <p className="text-sm text-pastel-text mb-4">
             Enter the recipient's email address to send the tech pack with PDF attachment.
           </p>
